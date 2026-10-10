@@ -6,7 +6,7 @@
 #include <math.h>
 #include <time.h>
 
-//  консты + настрйоки
+
 
 
 #define WINDOW_WIDTH          1280
@@ -35,14 +35,12 @@
 #define MAX_DELTA_TIME        0.05f
 #define RENDERER_MAX_VERTICES 65536
 
-//  типы данных
 
 typedef struct {
     float x, y;
 } Vector2D;
 
 
-// доподключить желтый фиолетовый !!!
 typedef enum {
     BALL_COLOR_RED = 0,
     BALL_COLOR_BLUE = 1,
@@ -62,7 +60,6 @@ typedef enum {
     GAME_STATE_GAME_OVER
 } GameState;
 
-// один шар в цепочке
 typedef struct {
     Vector2D  position;                   // где шар на экране (x, y)
     BallColor color;                      // его цвет
@@ -90,7 +87,6 @@ typedef struct {
     float    total_path_length;
 } BallPath;
 
-// вся цепочка шаров целиком
 typedef struct {
     ChainBall balls[MAX_BALLS_IN_CHAIN]; // все шары в цепи
     int       ball_count;                // сколько шаров сейчас (живых + взрывающихся)
@@ -251,8 +247,11 @@ static float             win_animation_timer;
 static float             score_popup_timer;
 static int               score_popup_value;
 static Vector2D          score_popup_position;
-static float death_flash_timer = 0.0f; 
-static float death_pause_timer = 0.0f; 
+static float death_flash_timer = 0.0f;
+static float death_pause_timer = 0.0f;
+
+static int       bench_mode = 0;
+static long long bench_vertex_total = 0;
 
 //вектора
 
@@ -352,7 +351,7 @@ static float find_nearest_path_distance_to_point(const BallPath* path, Vector2D 
 
 // просто берём случайный цвет из тех, что есть на уровне
 static BallColor pick_random_color(int color_count) {
-    return (BallColor)(rand() % color_count); 
+    return (BallColor)(rand() % color_count);
 }
 
 // расставляем шары в начале уровня
@@ -584,7 +583,7 @@ static int find_best_insert_position_near_hit(const BallChain* chain,
     // dot < 0 — шар сзади вставка после
     float dot = to_ball.x * projectile_velocity.x + to_ball.y * projectile_velocity.y;
     return dot > 0 ? closest_index - 1 : closest_index;
-    (void)path; 
+    (void)path;
 }
 
 // двигаем цепь вперёд на один кадр
@@ -701,7 +700,7 @@ static void bot_analyze_chain_and_choose_best_shot(BotAI* bot_ai,
         int score_next_ball = simulate_score_if_ball_inserted_at(
             chain, i, player_cannon->next_ball);
 
-        BallColor best_color_here = (score_next_ball > score_current_ball) 
+        BallColor best_color_here = (score_next_ball > score_current_ball)
             ? player_cannon->next_ball
             : player_cannon->loaded_ball;
 
@@ -842,7 +841,7 @@ static void compute_and_show_hint(HintOverlay* hint_overlay,
     }
 }
 
-static void tick_hint_display_timer(HintOverlay* hint_overlay,const BallChain* chain, const BallPath* path, float delta_time) {
+static void tick_hint_display_timer(HintOverlay* hint_overlay, const BallChain* chain, const BallPath* path, float delta_time) {
     if (!hint_overlay->is_visible) return;
     hint_overlay->display_timer -= delta_time;
     if (hint_overlay->display_timer <= 0) hint_overlay->is_visible = 0;
@@ -943,6 +942,11 @@ static void renderer_initialize(Renderer* r) {
 
 static void flush_vertex_buffer_to_gpu(Renderer* r) {
     if (r->buffered_vertex_count == 0) return;
+    if (bench_mode) {                       // без окна GL не вызываем, только считаем вершины
+        bench_vertex_total += r->buffered_vertex_count;
+        r->buffered_vertex_count = 0;
+        return;
+    }
     glBindVertexArray(r->vertex_array_object);
     glBindBuffer(GL_ARRAY_BUFFER, r->vertex_buffer_object);
     glBufferSubData(GL_ARRAY_BUFFER, 0,
@@ -1569,9 +1573,215 @@ static void on_mouse_moved(GLFWwindow* window, double x, double y) {
     mouse_position = (Vector2D){ (float)x, (float)y };
 }
 
+// ======================= БЕНЧМАРК (запуск: Zuma.exe --bench) =======================
+
+static double bench_now_ms(void) {
+    return (double)clock() * 1000.0 / (double)CLOCKS_PER_SEC;
+}
+
+// Повторяет statement, пока суммарное время не превысит 300 мс, и возвращает мс на один вызов
+#define BENCH_TIME_PER_CALL(result, statement)                          \
+    do {                                                                \
+        long reps_ = 1;                                                 \
+        for (;;) {                                                      \
+            double t0_ = bench_now_ms();                                \
+            for (long k_ = 0; k_ < reps_; k_++) { statement; }          \
+            double t1_ = bench_now_ms();                                \
+            if (t1_ - t0_ >= 300.0 || reps_ > (1L << 28)) {             \
+                (result) = (t1_ - t0_) / (double)reps_;                 \
+                break;                                                  \
+            }                                                           \
+            reps_ *= 2;                                                 \
+        }                                                               \
+    } while (0)
+
+static unsigned int bench_hash_step(unsigned int h, unsigned int v) {
+    return (h ^ v) * 16777619u;
+}
+
+// Тест 1: масштабирование анализа бота по числу шаров N
+static void bench_bot_scaling(void) {
+    load_level_and_reset_game(0);
+    int sizes[] = { 25, 50, 100, 200, 400 };
+    for (int s = 0; s < 5; s++) {
+        int n = sizes[s];
+        srand(12345);
+        initialize_ball_chain(&ball_chain, n, 3);
+        ball_chain.head_distance_along_path = level_path.total_path_length * 0.5f;
+        recalculate_ball_screen_positions(&ball_chain, &level_path);
+        cannon.loaded_ball = BALL_COLOR_RED;
+        cannon.next_ball = BALL_COLOR_BLUE;
+
+        double ms;
+        BENCH_TIME_PER_CALL(ms, bot_analyze_chain_and_choose_best_shot(
+            &bot, &ball_chain, &cannon, &level_path));
+        printf("bot_analyze,%d,%.6f,ms_per_call\n", n, ms);
+    }
+}
+
+// Тест 2: масштабирование подсказки (та же идея, что у бота)
+static void bench_hint_scaling(void) {
+    load_level_and_reset_game(0);
+    int sizes[] = { 25, 50, 100, 200, 400 };
+    for (int s = 0; s < 5; s++) {
+        int n = sizes[s];
+        srand(12345);
+        initialize_ball_chain(&ball_chain, n, 3);
+        ball_chain.head_distance_along_path = level_path.total_path_length * 0.5f;
+        recalculate_ball_screen_positions(&ball_chain, &level_path);
+        cannon.loaded_ball = BALL_COLOR_RED;
+
+        double ms;
+        BENCH_TIME_PER_CALL(ms, compute_and_show_hint(
+            &hint, &ball_chain, &cannon, &level_path));
+        printf("hint,%d,%.6f,ms_per_call\n", n, ms);
+    }
+}
+
+// Тест 3: реальный игровой цикл, играет бот, уровень 1 (30 шаров), без отрисовки
+static void bench_game_loop(void) {
+    srand(42);
+    bot_mode_enabled = 1;
+    player.score = 0;
+    player.lives_remaining = 3;
+    player.current_level = 0;
+    load_level_and_reset_game(0);
+
+    const int   frames = 300000;
+    const float dt = 1.0f / 60.0f;
+    long wins = 0, game_overs = 0;
+    long long total_score = 0;
+    unsigned int fingerprint = 2166136261u;
+
+    double t0 = bench_now_ms();
+    for (int f = 0; f < frames; f++) {
+        if (current_game_state == GAME_STATE_LEVEL_WIN) {
+            wins++;
+            total_score += player.score;
+            load_level_and_reset_game(0);
+        }
+        else if (current_game_state == GAME_STATE_GAME_OVER) {
+            game_overs++;
+            player.score = 0;
+            player.lives_remaining = 3;
+            load_level_and_reset_game(0);
+        }
+        update_game_logic(dt);
+        fingerprint = bench_hash_step(fingerprint, (unsigned)ball_chain.ball_count);
+        fingerprint = bench_hash_step(fingerprint, (unsigned)active_projectile_count);
+        fingerprint = bench_hash_step(fingerprint, (unsigned)player.score);
+    }
+    double t1 = bench_now_ms();
+
+    printf("game_loop,%d,%.6f,us_per_frame\n", frames, (t1 - t0) * 1000.0 / frames);
+    // контрольные значения: после оптимизации они должны совпасть с исходной версией
+    printf("check_wins,%ld,,\ncheck_game_overs,%ld,,\ncheck_total_score,%lld,,\n",
+        wins, game_overs, total_score);
+    printf("check_fingerprint,%08x,,\n", fingerprint);
+}
+
+// Подготовка вершин для одного кадра (без вызовов OpenGL)
+static void bench_render_one_frame(void) {
+    renderer.buffered_vertex_count = 0;
+    renderer.active_shader_mode = -1;
+    draw_entire_path(&renderer, &level_path);
+    for (int i = 0; i < ball_chain.ball_count; i++) {
+        ChainBall* b = &ball_chain.balls[i];
+        if (!b->is_alive && !b->is_popping) continue;
+        float scale = b->is_popping ? (1.0f + b->pop_animation_progress * 0.5f)
+            : b->insert_animation_progress;
+        float alpha = b->is_popping ? (1.0f - b->pop_animation_progress) : 1.0f;
+        draw_colored_ball(&renderer, b->position, b->color, scale, alpha);
+    }
+    for (int i = 0; i < active_projectile_count; i++)
+        if (projectiles[i].is_active)
+            draw_colored_ball(&renderer, projectiles[i].position, projectiles[i].color, 1.0f, 1.0f);
+    draw_cannon_with_next_ball(&renderer, &cannon);
+    render_gameplay_hud();
+    renderer_end_frame(&renderer);
+}
+
+static void bench_render_path_only(void) {
+    renderer.buffered_vertex_count = 0;
+    renderer.active_shader_mode = -1;
+    draw_entire_path(&renderer, &level_path);
+    renderer_end_frame(&renderer);
+}
+
+static void bench_render_hud_only(void) {
+    renderer.buffered_vertex_count = 0;
+    renderer.active_shader_mode = -1;
+    render_gameplay_hud();
+    renderer_end_frame(&renderer);
+}
+
+// Тест 4: CPU-часть отрисовки кадра
+static void bench_render_cpu(void) {
+    srand(7);
+    bot_mode_enabled = 1;
+    player.score = 0;
+    player.lives_remaining = 3;
+    player.current_level = 0;
+    load_level_and_reset_game(0);
+    for (int i = 0; i < 600; i++) update_game_logic(1.0f / 60.0f);   // «прогрев» 10 секунд игры
+
+    double ms;
+    bench_vertex_total = 0;
+    bench_render_one_frame();
+    printf("render_vertices_per_frame,1,%lld,vertices\n", bench_vertex_total);
+
+    BENCH_TIME_PER_CALL(ms, bench_render_one_frame());
+    printf("render_frame_cpu,1,%.6f,ms_per_frame\n", ms);
+    BENCH_TIME_PER_CALL(ms, bench_render_path_only());
+    printf("render_path_cpu,1,%.6f,ms_per_frame\n", ms);
+    BENCH_TIME_PER_CALL(ms, bench_render_hud_only());
+    printf("render_hud_cpu,1,%.6f,ms_per_frame\n", ms);
+}
+
+// Тест: поиск позиции на пути по пройденной длине (get_position_at_path_distance)
+static float bench_sink;
+
+static void bench_path_lookup_batch(const float* distances, int count) {
+    float acc = 0.0f;
+    for (int i = 0; i < count; i++) {
+        Vector2D p = get_position_at_path_distance(&level_path, distances[i]);
+        acc += p.x + p.y;
+    }
+    bench_sink += acc;   // чтобы компилятор не выбросил вызовы
+}
+
+static void bench_path_lookup(void) {
+    static float distances[4096];
+    load_level_and_reset_game(0);
+    srand(99);
+    for (int i = 0; i < 4096; i++)
+        distances[i] = level_path.total_path_length * ((float)rand() / (float)RAND_MAX);
+
+    double ms;
+    BENCH_TIME_PER_CALL(ms, bench_path_lookup_batch(distances, 4096));
+    printf("path_lookup,%d,%.3f,ns_per_lookup\n", level_path.total_points, ms * 1e6 / 4096.0);
+}
+
+static int run_benchmarks(void) {
+    bench_mode = 1;
+    memset(&player, 0, sizeof(player));
+    memset(&bot, 0, sizeof(bot));
+    memset(&hint, 0, sizeof(hint));
+    printf("test,param,value,unit\n");
+    bench_bot_scaling();
+    bench_hint_scaling();
+    bench_game_loop();
+    bench_render_cpu();
+    bench_path_lookup();
+    return 0;
+}
+
 //мэйн
 
-int main(void) {
+int main(int argc, char** argv) {
+    if (argc > 1 && strcmp(argv[1], "--bench") == 0)
+        return run_benchmarks();
+
     srand((unsigned int)time(NULL));
 
     if (!glfwInit()) {
