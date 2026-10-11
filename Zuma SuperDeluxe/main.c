@@ -6,7 +6,7 @@
 #include <math.h>
 #include <time.h>
 
-
+//  консты + настрйоки
 
 
 #define WINDOW_WIDTH          1280
@@ -35,12 +35,14 @@
 #define MAX_DELTA_TIME        0.05f
 #define RENDERER_MAX_VERTICES 65536
 
+//  типы данных
 
 typedef struct {
     float x, y;
 } Vector2D;
 
 
+// доподключить желтый фиолетовый !!!
 typedef enum {
     BALL_COLOR_RED = 0,
     BALL_COLOR_BLUE = 1,
@@ -60,6 +62,7 @@ typedef enum {
     GAME_STATE_GAME_OVER
 } GameState;
 
+// один шар в цепочке
 typedef struct {
     Vector2D  position;                   // где шар на экране (x, y)
     BallColor color;                      // его цвет
@@ -87,6 +90,7 @@ typedef struct {
     float    total_path_length;
 } BallPath;
 
+// вся цепочка шаров целиком
 typedef struct {
     ChainBall balls[MAX_BALLS_IN_CHAIN]; // все шары в цепи
     int       ball_count;                // сколько шаров сейчас (живых + взрывающихся)
@@ -250,6 +254,7 @@ static Vector2D          score_popup_position;
 static float death_flash_timer = 0.0f;
 static float death_pause_timer = 0.0f;
 
+// --- режим бенчмарка (запуск: Zuma.exe --bench) ---
 static int       bench_mode = 0;
 static long long bench_vertex_total = 0;
 
@@ -670,6 +675,67 @@ static int simulate_score_if_ball_inserted_at(const BallChain* chain,
     return score;
 }
 
+// ---- Оптимизация №1 (алгоритмическая): оценка вставки без копирования цепи ----
+// Старая simulate_score_if_ball_inserted_at копирует всю структуру BallChain (~16 КБ)
+// на каждую пробную вставку. Новый вариант один раз за O(N) строит таблицу длин серий,
+// после чего оценка любой вставки считается за O(1) без копирования и memmove.
+// Старая функция оставлена как эталон: бенчмарк сверяет с ней результаты новой.
+
+typedef struct {
+    int left[MAX_BALLS_IN_CHAIN];   // left[i]  = длина серии, заканчивающейся в шаре i (включая его)
+    int right[MAX_BALLS_IN_CHAIN];  // right[i] = длина серии, начинающейся в шаре i (включая его)
+} RunTable;
+
+static int ball_is_matchable(const ChainBall* b) {
+    return b->is_alive && !b->is_popping;
+}
+
+static void build_run_table(const BallChain* chain, RunTable* table) {
+    int n = chain->ball_count;
+    for (int i = 0; i < n; i++) {
+        const ChainBall* b = &chain->balls[i];
+        if (!ball_is_matchable(b)) { table->left[i] = 0; continue; }
+        table->left[i] = (i > 0 && ball_is_matchable(&chain->balls[i - 1]) &&
+            chain->balls[i - 1].color == b->color) ? table->left[i - 1] + 1 : 1;
+    }
+    for (int i = n - 1; i >= 0; i--) {
+        const ChainBall* b = &chain->balls[i];
+        if (!ball_is_matchable(b)) { table->right[i] = 0; continue; }
+        table->right[i] = (i < n - 1 && ball_is_matchable(&chain->balls[i + 1]) &&
+            chain->balls[i + 1].color == b->color) ? table->right[i + 1] + 1 : 1;
+    }
+}
+
+static int score_if_ball_inserted_at_fast(const BallChain* chain, const RunTable* table,
+    int index, BallColor color) {
+    int n = chain->ball_count;
+    if (n >= MAX_BALLS_IN_CHAIN - 1) return 0;   // как и в insert_projectile_into_chain
+    if (index < -1) index = -1;
+    if (index >= n) index = n - 1;
+
+    // новый шар встаёт между index и index+1; серия растёт в обе стороны
+    int left_len = 0;
+    if (index >= 0 && ball_is_matchable(&chain->balls[index]) &&
+        chain->balls[index].color == color)
+        left_len = table->left[index];
+
+    int right_len = 0;
+    if (index + 1 < n && ball_is_matchable(&chain->balls[index + 1]) &&
+        chain->balls[index + 1].color == color)
+        right_len = table->right[index + 1];
+
+    int run_len = left_len + 1 + right_len;
+    if (run_len < MINIMUM_MATCH_LENGTH) return 0;
+
+    int score = run_len * 100;
+    int left_neighbor = index - left_len;          // шар слева от серии
+    int right_neighbor = index + 1 + right_len;    // шар справа от серии
+    if (left_neighbor >= 0 && right_neighbor < n &&
+        chain->balls[left_neighbor].color == chain->balls[right_neighbor].color)
+        score += 200;                              // бонус за «цепную реакцию»
+    return score;
+}
+
 static int count_same_color_neighbors(const BallChain* chain,
     int index, BallColor color) {
     int count = 0;
@@ -692,13 +758,16 @@ static void bot_analyze_chain_and_choose_best_shot(BotAI* bot_ai,
 
     BallColor best_color = player_cannon->loaded_ball;
 
+    RunTable run_table;
+    build_run_table(chain, &run_table);
+
     for (int i = 0; i < chain->ball_count; i++) {
         if (!chain->balls[i].is_alive) continue;
 
-        int score_current_ball = simulate_score_if_ball_inserted_at(
-            chain, i, player_cannon->loaded_ball);
-        int score_next_ball = simulate_score_if_ball_inserted_at(
-            chain, i, player_cannon->next_ball);
+        int score_current_ball = score_if_ball_inserted_at_fast(
+            chain, &run_table, i, player_cannon->loaded_ball);
+        int score_next_ball = score_if_ball_inserted_at_fast(
+            chain, &run_table, i, player_cannon->next_ball);
 
         BallColor best_color_here = (score_next_ball > score_current_ball)
             ? player_cannon->next_ball
@@ -818,9 +887,12 @@ static void compute_and_show_hint(HintOverlay* hint_overlay,
     int   best_score = -1;
     float best_t = 0.0f;
 
+    RunTable run_table;
+    build_run_table(chain, &run_table);
+
     for (int i = 0; i < chain->ball_count; i++) {
         if (!chain->balls[i].is_alive) continue;
-        int score = simulate_score_if_ball_inserted_at(chain, i, player_cannon->loaded_ball)
+        int score = score_if_ball_inserted_at_fast(chain, &run_table, i, player_cannon->loaded_ball)
             + count_same_color_neighbors(chain, i, player_cannon->loaded_ball) * 15;
         if (score > best_score) {
             best_score = score;
@@ -1738,6 +1810,36 @@ static void bench_render_cpu(void) {
     printf("render_hud_cpu,1,%.6f,ms_per_frame\n", ms);
 }
 
+// Тест 5: новая оценка вставки должна давать те же очки, что и эталон (со старым memcpy)
+static void bench_check_score_equivalence(void) {
+    static BallChain chain;
+    long mismatches = 0, comparisons = 0;
+    srand(2024);
+    for (int trial = 0; trial < 3000; trial++) {
+        memset(&chain, 0, sizeof(chain));
+        int n = 1 + rand() % 120;
+        int colors = 2 + rand() % 4;
+        chain.ball_count = n;
+        for (int i = 0; i < n; i++) {
+            chain.balls[i].color = (BallColor)(rand() % colors);
+            chain.balls[i].is_alive = (rand() % 15 != 0);
+            chain.balls[i].is_popping = (rand() % 20 == 0);
+            chain.balls[i].offset_from_chain_head = -(float)i * BALL_DIAMETER;
+        }
+        RunTable table;
+        build_run_table(&chain, &table);
+        for (int i = -1; i < n; i++) {
+            for (int c = 0; c < colors; c++) {
+                int ref = simulate_score_if_ball_inserted_at(&chain, i, (BallColor)c);
+                int fast = score_if_ball_inserted_at_fast(&chain, &table, i, (BallColor)c);
+                comparisons++;
+                if (ref != fast) mismatches++;
+            }
+        }
+    }
+    printf("check_score_equivalence_mismatches,%ld,of_%ld,\n", mismatches, comparisons);
+}
+
 // Тест: поиск позиции на пути по пройденной длине (get_position_at_path_distance)
 static float bench_sink;
 
@@ -1773,6 +1875,7 @@ static int run_benchmarks(void) {
     bench_game_loop();
     bench_render_cpu();
     bench_path_lookup();
+    bench_check_score_equivalence();
     return 0;
 }
 
