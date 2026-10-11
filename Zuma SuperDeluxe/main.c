@@ -17,6 +17,7 @@
 #define BALL_DIAMETER         (BALL_RADIUS * 2.0f)
 #define MAX_BALLS_IN_CHAIN    512
 #define MAX_PATH_POINTS       1024
+#define PATH_LOOKUP_BUCKETS   1024   // число «корзин» для быстрого поиска позиции на пути
 #define MAX_PROJECTILES       8
 #define MAX_CONTROL_POINTS    32
 #define NUMBER_OF_COLORS      5
@@ -88,6 +89,8 @@ typedef struct {
     float    arc_length_at_point[MAX_PATH_POINTS];
     int      total_points;
     float    total_path_length;
+    float    bucket_width;                                // длина пути, приходящаяся на одну корзину
+    int      bucket_first_segment[PATH_LOOKUP_BUCKETS];   // сегмент, с которого начинаем поиск для корзины
 } BallPath;
 
 // вся цепочка шаров целиком
@@ -251,8 +254,8 @@ static float             win_animation_timer;
 static float             score_popup_timer;
 static int               score_popup_value;
 static Vector2D          score_popup_position;
-static float death_flash_timer = 0.0f;
-static float death_pause_timer = 0.0f;
+static float death_flash_timer = 0.0f; 
+static float death_pause_timer = 0.0f; 
 
 // --- режим бенчмарка (запуск: Zuma.exe --bench) ---
 static int       bench_mode = 0;
@@ -321,9 +324,42 @@ static void build_path_from_control_points(BallPath* path,
             + vector2d_distance(path->points[i], path->points[i - 1]);
     }
     path->total_path_length = path->arc_length_at_point[path->total_points - 1];
+
+    // таблица для поиска за O(1): для каждой корзины запоминаем последний сегмент,
+    // который начинается до левой границы корзины
+    path->bucket_width = path->total_path_length / (float)PATH_LOOKUP_BUCKETS;
+    int segment = 0;
+    for (int b = 0; b < PATH_LOOKUP_BUCKETS; b++) {
+        float left_edge = (float)b * path->bucket_width;
+        while (segment + 2 < path->total_points &&
+            path->arc_length_at_point[segment + 1] < left_edge)
+            segment++;
+        path->bucket_first_segment[b] = segment;
+    }
 }
 
+// Оптимизация №2: поиск за O(1) вместо бинарного поиска O(log P).
+// Результат совпадает с эталонной версией до бита.
 static Vector2D get_position_at_path_distance(const BallPath* path, float distance) {
+    if (distance <= 0.0f) return path->points[0];
+    if (distance >= path->total_path_length) return path->points[path->total_points - 1];
+
+    int bucket = (int)(distance / path->bucket_width);
+    if (bucket >= PATH_LOOKUP_BUCKETS) bucket = PATH_LOOKUP_BUCKETS - 1;
+    int lo = path->bucket_first_segment[bucket];
+    while (lo > 0 && path->arc_length_at_point[lo] >= distance) lo--;                   // страховка от округления
+    while (lo + 2 < path->total_points && path->arc_length_at_point[lo + 1] < distance) lo++;
+    int hi = lo + 1;
+
+    float segment_length = path->arc_length_at_point[hi] - path->arc_length_at_point[lo];
+    float fraction = segment_length > 0
+        ? (distance - path->arc_length_at_point[lo]) / segment_length : 0.0f;
+    Vector2D a = path->points[lo], b = path->points[hi];
+    return (Vector2D) { a.x + (b.x - a.x) * fraction, a.y + (b.y - a.y) * fraction };
+}
+
+// Эталон (бинарный поиск): оставлен для проверки в бенчмарке
+static Vector2D get_position_at_path_distance_reference(const BallPath* path, float distance) {
     if (distance <= 0.0f) return path->points[0];
     if (distance >= path->total_path_length) return path->points[path->total_points - 1];
 
@@ -356,7 +392,7 @@ static float find_nearest_path_distance_to_point(const BallPath* path, Vector2D 
 
 // просто берём случайный цвет из тех, что есть на уровне
 static BallColor pick_random_color(int color_count) {
-    return (BallColor)(rand() % color_count);
+    return (BallColor)(rand() % color_count); 
 }
 
 // расставляем шары в начале уровня
@@ -588,7 +624,7 @@ static int find_best_insert_position_near_hit(const BallChain* chain,
     // dot < 0 — шар сзади вставка после
     float dot = to_ball.x * projectile_velocity.x + to_ball.y * projectile_velocity.y;
     return dot > 0 ? closest_index - 1 : closest_index;
-    (void)path;
+    (void)path; 
 }
 
 // двигаем цепь вперёд на один кадр
@@ -769,7 +805,7 @@ static void bot_analyze_chain_and_choose_best_shot(BotAI* bot_ai,
         int score_next_ball = score_if_ball_inserted_at_fast(
             chain, &run_table, i, player_cannon->next_ball);
 
-        BallColor best_color_here = (score_next_ball > score_current_ball)
+        BallColor best_color_here = (score_next_ball > score_current_ball) 
             ? player_cannon->next_ball
             : player_cannon->loaded_ball;
 
@@ -913,7 +949,7 @@ static void compute_and_show_hint(HintOverlay* hint_overlay,
     }
 }
 
-static void tick_hint_display_timer(HintOverlay* hint_overlay, const BallChain* chain, const BallPath* path, float delta_time) {
+static void tick_hint_display_timer(HintOverlay* hint_overlay,const BallChain* chain, const BallPath* path, float delta_time) {
     if (!hint_overlay->is_visible) return;
     hint_overlay->display_timer -= delta_time;
     if (hint_overlay->display_timer <= 0) hint_overlay->is_visible = 0;
@@ -1761,7 +1797,7 @@ static void bench_render_one_frame(void) {
         ChainBall* b = &ball_chain.balls[i];
         if (!b->is_alive && !b->is_popping) continue;
         float scale = b->is_popping ? (1.0f + b->pop_animation_progress * 0.5f)
-            : b->insert_animation_progress;
+                                    : b->insert_animation_progress;
         float alpha = b->is_popping ? (1.0f - b->pop_animation_progress) : 1.0f;
         draw_colored_ball(&renderer, b->position, b->color, scale, alpha);
     }
@@ -1864,6 +1900,54 @@ static void bench_path_lookup(void) {
     printf("path_lookup,%d,%.3f,ns_per_lookup\n", level_path.total_points, ms * 1e6 / 4096.0);
 }
 
+// Тест 6: новый поиск позиции на пути должен совпадать с эталоном (бинарный поиск) до бита
+static void bench_path_lookup_reference_batch(const float* distances, int count) {
+    float acc = 0.0f;
+    for (int i = 0; i < count; i++) {
+        Vector2D p = get_position_at_path_distance_reference(&level_path, distances[i]);
+        acc += p.x + p.y;
+    }
+    bench_sink += acc;
+}
+
+static void bench_check_path_lookup(void) {
+    static float distances[4096];
+    long mismatches = 0, comparisons = 0;
+    for (int level = 0; level < (int)(sizeof(GAME_LEVELS) / sizeof(GAME_LEVELS[0])); level++) {
+        load_level_and_reset_game(level);
+        const BallPath* path = &level_path;
+        // граничные значения: сами узлы пути и значения чуть левее/правее них
+        for (int i = 0; i < path->total_points; i++) {
+            float base = path->arc_length_at_point[i];
+            float probes[3] = { base, nextafterf(base, -1e9f), nextafterf(base, 1e9f) };
+            for (int k = 0; k < 3; k++) {
+                Vector2D a = get_position_at_path_distance(path, probes[k]);
+                Vector2D b = get_position_at_path_distance_reference(path, probes[k]);
+                comparisons++;
+                if (memcmp(&a, &b, sizeof(a)) != 0) mismatches++;
+            }
+        }
+        // случайные значения
+        for (int i = 0; i < 200000; i++) {
+            float d = (path->total_path_length + 20.0f) * ((float)rand() / (float)RAND_MAX) - 10.0f;
+            Vector2D a = get_position_at_path_distance(path, d);
+            Vector2D b = get_position_at_path_distance_reference(path, d);
+            comparisons++;
+            if (memcmp(&a, &b, sizeof(a)) != 0) mismatches++;
+        }
+    }
+    printf("check_path_lookup_mismatches,%ld,of_%ld,\n", mismatches, comparisons);
+
+    // скорость эталона для сравнения «в одном запуске»
+    load_level_and_reset_game(0);
+    srand(99);
+    for (int i = 0; i < 4096; i++)
+        distances[i] = level_path.total_path_length * ((float)rand() / (float)RAND_MAX);
+    double ms;
+    BENCH_TIME_PER_CALL(ms, bench_path_lookup_reference_batch(distances, 4096));
+    printf("path_lookup_reference,%d,%.3f,ns_per_lookup\n", level_path.total_points, ms * 1e6 / 4096.0);
+}
+
 static int run_benchmarks(void) {
     bench_mode = 1;
     memset(&player, 0, sizeof(player));
@@ -1876,6 +1960,7 @@ static int run_benchmarks(void) {
     bench_render_cpu();
     bench_path_lookup();
     bench_check_score_equivalence();
+    bench_check_path_lookup();
     return 0;
 }
 
