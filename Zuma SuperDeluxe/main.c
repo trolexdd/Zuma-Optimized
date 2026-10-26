@@ -6,8 +6,6 @@
 #include <math.h>
 #include <time.h>
 
-//  консты + настрйоки
-
 
 #define WINDOW_WIDTH          1280
 #define WINDOW_HEIGHT         720
@@ -17,7 +15,7 @@
 #define BALL_DIAMETER         (BALL_RADIUS * 2.0f)
 #define MAX_BALLS_IN_CHAIN    512
 #define MAX_PATH_POINTS       1024
-#define PATH_LOOKUP_BUCKETS   1024   // число «корзин» для быстрого поиска позиции на пути
+#define PATH_LOOKUP_BUCKETS   1024
 #define MAX_PROJECTILES       8
 #define MAX_CONTROL_POINTS    32
 #define NUMBER_OF_COLORS      5
@@ -36,14 +34,12 @@
 #define MAX_DELTA_TIME        0.05f
 #define RENDERER_MAX_VERTICES 65536
 
-//  типы данных
 
 typedef struct {
     float x, y;
 } Vector2D;
 
 
-// доподключить желтый фиолетовый !!!
 typedef enum {
     BALL_COLOR_RED = 0,
     BALL_COLOR_BLUE = 1,
@@ -54,7 +50,6 @@ typedef enum {
 } BallColor;
 
 
-
 typedef enum {
     GAME_STATE_MAIN_MENU,
     GAME_STATE_PLAYING,
@@ -63,25 +58,23 @@ typedef enum {
     GAME_STATE_GAME_OVER
 } GameState;
 
-// один шар в цепочке
+
 typedef struct {
-    Vector2D  position;                   // где шар на экране (x, y)
-    BallColor color;                      // его цвет
-    float     offset_from_chain_head;    // насколько он сзади головы (всегда <= 0)
-    int       is_alive;                   // 1 = нормальный шар, 0 = мёртвый
-    float     insert_animation_progress;  // 0.0 = только вставили (маленький), 1.0 = полный размер
-    float     pop_animation_progress;    // 0.0 = начало взрыва, 1.0 = исчез
-    int       is_popping;                // взрывается прямо сейчас (рендерится, но коллизий нет)
+    Vector2D  position;
+    BallColor color;
+    float     offset_from_chain_head;
+    int       is_alive;
+    float     insert_animation_progress;
+    float     pop_animation_progress;
+    int       is_popping;
 } ChainBall;
 
 
-
-// летящий снаряд из пушки
 typedef struct {
-    Vector2D  position;  // где сейчас в воздухе
-    Vector2D  velocity;  // куда летит и с какой скоростью (пикселей/сек)
-    BallColor color;     // цвет (берётся из пушки в момент выстрела)
-    int       is_active; // 1 = летит, 0 = попал или вышел за экран
+    Vector2D  position;
+    Vector2D  velocity;
+    BallColor color;
+    int       is_active;
 } FiredProjectile;
 
 typedef struct {
@@ -89,18 +82,18 @@ typedef struct {
     float    arc_length_at_point[MAX_PATH_POINTS];
     int      total_points;
     float    total_path_length;
-    float    bucket_width;                                // длина пути, приходящаяся на одну корзину
-    int      bucket_first_segment[PATH_LOOKUP_BUCKETS];   // сегмент, с которого начинаем поиск для корзины
+    float    bucket_width;
+    int      bucket_first_segment[PATH_LOOKUP_BUCKETS];
 } BallPath;
 
-// вся цепочка шаров целиком
+
 typedef struct {
-    ChainBall balls[MAX_BALLS_IN_CHAIN]; // все шары в цепи
-    int       ball_count;                // сколько шаров сейчас (живых + взрывающихся)
-    float     head_distance_along_path;  // голова: как далеко прошла по пути (в пикселях)
-    float     movement_speed;            // скорость движения цепи (пикселей в секунду)
-    float     combo_timer;              // сколько секунд осталось до сброса комбо
-    int       combo_multiplier;         // текущий множитель комбо (0 = нет комбо)
+    ChainBall balls[MAX_BALLS_IN_CHAIN];
+    int       ball_count;
+    float     head_distance_along_path;
+    float     movement_speed;
+    float     combo_timer;
+    int       combo_multiplier;
 } BallChain;
 
 
@@ -160,7 +153,6 @@ typedef struct {
     float        ortho_projection[16];
 } Renderer;
 
-//  Урровень
 
 static const LevelDefinition GAME_LEVELS[] = {
     {
@@ -194,8 +186,6 @@ static const LevelDefinition GAME_LEVELS[] = {
 };
 
 static const int TOTAL_LEVELS = 1;
-
-//шейдеры настроить, хабровские примерно накинул, мб надо будет удалить, но выглядит круто
 
 
 static const char* VERTEX_SHADER_SOURCE =
@@ -236,7 +226,6 @@ static const char* FRAGMENT_SHADER_FLAT =
 "    fragColor = vColor;\n"
 "}\n";
 
-//глобальные функции
 
 static GameState         current_game_state;
 static PlayerData        player;
@@ -254,14 +243,13 @@ static float             win_animation_timer;
 static float             score_popup_timer;
 static int               score_popup_value;
 static Vector2D          score_popup_position;
-static float death_flash_timer = 0.0f; 
-static float death_pause_timer = 0.0f; 
+static float death_flash_timer = 0.0f;
+static float death_pause_timer = 0.0f;
 
-// --- режим бенчмарка (запуск: Zuma.exe --bench) ---
+
 static int       bench_mode = 0;
 static long long bench_vertex_total = 0;
 
-//вектора
 
 static Vector2D vector2d_add(Vector2D a, Vector2D b) {
     return (Vector2D) { a.x + b.x, a.y + b.y };
@@ -284,7 +272,6 @@ static float vector2d_distance(Vector2D a, Vector2D b) {
     return vector2d_length(vector2d_subtract(a, b));
 }
 
-//алгос катмулла-рома + параметризация
 
 static Vector2D catmull_rom_interpolate(Vector2D p0, Vector2D p1,
     Vector2D p2, Vector2D p3, float t) {
@@ -325,8 +312,7 @@ static void build_path_from_control_points(BallPath* path,
     }
     path->total_path_length = path->arc_length_at_point[path->total_points - 1];
 
-    // таблица для поиска за O(1): для каждой корзины запоминаем последний сегмент,
-    // который начинается до левой границы корзины
+
     path->bucket_width = path->total_path_length / (float)PATH_LOOKUP_BUCKETS;
     int segment = 0;
     for (int b = 0; b < PATH_LOOKUP_BUCKETS; b++) {
@@ -338,8 +324,7 @@ static void build_path_from_control_points(BallPath* path,
     }
 }
 
-// Оптимизация №2: поиск за O(1) вместо бинарного поиска O(log P).
-// Результат совпадает с эталонной версией до бита.
+
 static Vector2D get_position_at_path_distance(const BallPath* path, float distance) {
     if (distance <= 0.0f) return path->points[0];
     if (distance >= path->total_path_length) return path->points[path->total_points - 1];
@@ -347,7 +332,7 @@ static Vector2D get_position_at_path_distance(const BallPath* path, float distan
     int bucket = (int)(distance / path->bucket_width);
     if (bucket >= PATH_LOOKUP_BUCKETS) bucket = PATH_LOOKUP_BUCKETS - 1;
     int lo = path->bucket_first_segment[bucket];
-    while (lo > 0 && path->arc_length_at_point[lo] >= distance) lo--;                   // страховка от округления
+    while (lo > 0 && path->arc_length_at_point[lo] >= distance) lo--;
     while (lo + 2 < path->total_points && path->arc_length_at_point[lo + 1] < distance) lo++;
     int hi = lo + 1;
 
@@ -358,7 +343,7 @@ static Vector2D get_position_at_path_distance(const BallPath* path, float distan
     return (Vector2D) { a.x + (b.x - a.x) * fraction, a.y + (b.y - a.y) * fraction };
 }
 
-// Эталон (бинарный поиск): оставлен для проверки в бенчмарке
+
 static Vector2D get_position_at_path_distance_reference(const BallPath* path, float distance) {
     if (distance <= 0.0f) return path->points[0];
     if (distance >= path->total_path_length) return path->points[path->total_points - 1];
@@ -388,132 +373,129 @@ static float find_nearest_path_distance_to_point(const BallPath* path, Vector2D 
     return best_t;
 }
 
-//управление цепью
 
-// просто берём случайный цвет из тех, что есть на уровне
 static BallColor pick_random_color(int color_count) {
-    return (BallColor)(rand() % color_count); 
+    return (BallColor)(rand() % color_count);
 }
 
-// расставляем шары в начале уровня
+
 static void initialize_ball_chain(BallChain* chain,
     int ball_count, int color_count) {
     chain->ball_count = ball_count;
 
-    // голову ставим так, чтобы вся цепь поместилась позади неё
+
     chain->head_distance_along_path = (float)(ball_count - 1) * BALL_DIAMETER;
 
-    chain->movement_speed = CHAIN_BASE_SPEED; // начальная скорость из констант
-    chain->combo_timer = 0.0f;             // комбо ещё нет
+    chain->movement_speed = CHAIN_BASE_SPEED;
+    chain->combo_timer = 0.0f;
     chain->combo_multiplier = 0;
 
     for (int i = 0; i < ball_count; i++) {
-        chain->balls[i].color = pick_random_color(color_count); // случайный цвет
-        chain->balls[i].is_alive = 1;                              // все живые
+        chain->balls[i].color = pick_random_color(color_count);
+        chain->balls[i].is_alive = 1;
 
-        // отрицательный офсет сзади головы
+
         chain->balls[i].offset_from_chain_head = -(float)i * BALL_DIAMETER;
-        chain->balls[i].insert_animation_progress = 1.0f; // сразу полноразмерные
-        chain->balls[i].pop_animation_progress = 0.0f; // не взрываются
+        chain->balls[i].insert_animation_progress = 1.0f;
+        chain->balls[i].pop_animation_progress = 0.0f;
         chain->balls[i].is_popping = 0;
     }
 }
 
-// убираем из массива шары которые уже совсем мёртвые (и не взрываются)
+
 static void remove_dead_balls_from_chain(BallChain* chain) {
     int write_index = 0;
     for (int i = 0; i < chain->ball_count; i++) {
-        // оставляем шар если он живой еще взрывается
+
         if (chain->balls[i].is_alive || chain->balls[i].is_popping)
             chain->balls[write_index++] = chain->balls[i];
-        // если ни то ни другое — просто не копируем, он исчезает
+
     }
-    chain->ball_count = write_index; // обновляем счётчик
+    chain->ball_count = write_index;
 }
 
-// пересчитываем пиксельные координаты каждого шара на экране
+
 static void recalculate_ball_screen_positions(BallChain* chain,
     const BallPath* path) {
     for (int i = 0; i < chain->ball_count; i++) {
-        if (!chain->balls[i].is_alive) continue; // мёртвых не трогаем
+        if (!chain->balls[i].is_alive) continue;
 
-        // абсолютная позиция по пути = голова + смещение шара
+
         float dist = chain->head_distance_along_path
             + chain->balls[i].offset_from_chain_head;
 
-        if (dist < 0) dist = 0; // не даём уйти за начало пути
+        if (dist < 0) dist = 0;
 
-        // переводим дистанцию в координаты (x, y) на экране
+
         chain->balls[i].position = get_position_at_path_distance(path, dist);
     }
 }
 
-// ищем серию шаров одного цвета, в которую входит шар с индексом 
-// возвращает длину серии, а через указатели — начало и конец
+
 static int find_consecutive_color_run(const BallChain* chain, int index,
     int* run_start, int* run_end) {
 
-    // защита от кривого индекса
+
     if (index < 0 || index >= chain->ball_count) {
         *run_start = *run_end = index;
         return 0;
     }
-    // мёртвые и взрывающиеся не считаются
+
     if (!chain->balls[index].is_alive || chain->balls[index].is_popping) {
         *run_start = *run_end = index;
         return 0;
     }
 
-    BallColor target_color = chain->balls[index].color; // запомнили цвет
+    BallColor target_color = chain->balls[index].color;
 
-    int lo = index, hi = index; // начинаем с самого шара и расширяемся
+    int lo = index, hi = index;
 
-    // идём влево пока цвет тот же и шары живые
+
     while (lo > 0 && chain->balls[lo - 1].is_alive && !chain->balls[lo - 1].is_popping
         && chain->balls[lo - 1].color == target_color)
         lo--;
 
-    // идём вправо пока цвет тот же и шары живые
+
     while (hi < chain->ball_count - 1 && chain->balls[hi + 1].is_alive && !chain->balls[hi + 1].is_popping
         && chain->balls[hi + 1].color == target_color)
         hi++;
 
     *run_start = lo;
     *run_end = hi;
-    return hi - lo + 1; // длина серии
+    return hi - lo + 1;
 }
 
-// взрываем серию шаров и проверяем не получился ли каскад
+
 static int pop_matched_balls_and_check_cascade(BallChain* chain, int index,
     int* score_earned) {
 
-    // защита от кривого индекса
+
     if (index < 0 || index >= chain->ball_count) return 0;
     if (!chain->balls[index].is_alive || chain->balls[index].is_popping) return 0;
 
     int run_start, run_end;
     int run_length = find_consecutive_color_run(chain, index, &run_start, &run_end);
 
-    // меньше 3 одного цвета — ничего не взрываем
+
     if (run_length < MINIMUM_MATCH_LENGTH) return 0;
 
-    // считаем очки: чем длиннее серия и выше комбо — тем больше
-    *score_earned += run_length * 100 * (chain->combo_multiplier + 1);
-    chain->combo_multiplier++;               // комбо растёт
-    chain->combo_timer = COMBO_RESET_SECONDS; // сбрасываем таймер комбо
 
-    // запоминаем цвета соседей до бума
+    *score_earned += run_length * 100 * (chain->combo_multiplier + 1);
+    chain->combo_multiplier++;
+    chain->combo_timer = COMBO_RESET_SECONDS;
+
+
     BallColor left_neighbor_color = BALL_COLOR_NONE;
     BallColor right_neighbor_color = BALL_COLOR_NONE;
 
-    // ищем первого живого соседа слева
+
     for (int i = run_start - 1; i >= 0; i--) {
         if (chain->balls[i].is_alive && !chain->balls[i].is_popping) {
             left_neighbor_color = chain->balls[i].color;
             break;
         }
     }
-    // ищем первого живого соседа справа
+
     for (int i = run_end + 1; i < chain->ball_count; i++) {
         if (chain->balls[i].is_alive && !chain->balls[i].is_popping) {
             right_neighbor_color = chain->balls[i].color;
@@ -521,14 +503,14 @@ static int pop_matched_balls_and_check_cascade(BallChain* chain, int index,
         }
     }
 
-    // запускаем анимацию взрыва для всей серии
+
     for (int i = run_start; i <= run_end; i++) {
-        chain->balls[i].is_popping = 1;        // анимация пошла
+        chain->balls[i].is_popping = 1;
         chain->balls[i].pop_animation_progress = 0.0f;
-        chain->balls[i].is_alive = 0;          // коллизий больше нет
+        chain->balls[i].is_alive = 0;
     }
 
-    // проверка каскадв соприкоснулись и должны взорваться
+
     int cascade_count = 0;
     if (left_neighbor_color != BALL_COLOR_NONE &&
         right_neighbor_color != BALL_COLOR_NONE &&
@@ -542,70 +524,69 @@ static int pop_matched_balls_and_check_cascade(BallChain* chain, int index,
             }
         }
     }
-    return run_length + cascade_count; // сколько всего шаров взорвалось
+    return run_length + cascade_count;
 }
 
-// вставляем снаряд в массив цепочки на нужное место
+
 static int insert_projectile_into_chain(BallChain* chain, int insert_after_index,
     BallColor color) {
 
-    // нет места — отказываем
+
     if (chain->ball_count >= MAX_BALLS_IN_CHAIN - 1) return -1;
 
-    // зажимаем индекс в допустимый диапазон
+
     if (insert_after_index < -1) insert_after_index = -1;
     if (insert_after_index >= chain->ball_count)
         insert_after_index = chain->ball_count - 1;
 
-    int new_index = insert_after_index + 1;        // куда вставляем
-    int move_count = chain->ball_count - new_index; // сколько шаров нужно сдвинуть вправо
+    int new_index = insert_after_index + 1;
+    int move_count = chain->ball_count - new_index;
 
-    // сдвигаем хвост на одну позицию вправо чтобы освободить место
+
     if (move_count > 0)
         memmove(&chain->balls[new_index + 1], &chain->balls[new_index],
             move_count * sizeof(ChainBall));
 
-    chain->ball_count++; // теперь шаров на один больше
+    chain->ball_count++;
 
-    // заполняем новый шар
+
     chain->balls[new_index].color = color;
     chain->balls[new_index].is_alive = 1;
-    chain->balls[new_index].insert_animation_progress = 0.0f; // вырастет со временем
+    chain->balls[new_index].insert_animation_progress = 0.0f;
     chain->balls[new_index].pop_animation_progress = 0.0f;
     chain->balls[new_index].is_popping = 0;
 
-    // вычисляем oфсетик нового шара
+
     if (insert_after_index >= 0) {
-        // вставили после конкретного шара встаём сразу за ним
+
         chain->balls[new_index].offset_from_chain_head =
             chain->balls[insert_after_index].offset_from_chain_head - BALL_DIAMETER;
     }
     else if (chain->ball_count > 1) {
-        // вставили перед самой головой
+
         chain->balls[new_index].offset_from_chain_head =
             chain->balls[1].offset_from_chain_head + BALL_DIAMETER;
     }
     else {
-        // единственный шар в цепи
+
         chain->balls[new_index].offset_from_chain_head = 0.0f;
     }
 
-    // все шары позади нового сдвигаются ещё дальше назад
-    // создаёт видимый зазор чтоб потом красиво захлопнуть
+
     for (int i = new_index + 1; i < chain->ball_count; i++)
         chain->balls[i].offset_from_chain_head -= BALL_DIAMETER;
 
-    return new_index; // возвращаем куда вставили 
+    return new_index;
 }
 
-// определяем между какими шарами вставить снаряд после столкновения
+
 static int find_best_insert_position_near_hit(const BallChain* chain,
     const BallPath* path,
     Vector2D         hit_position,
     Vector2D         projectile_velocity) {
 
-    // ищем ближайший живой шар к точке попадания
-    float best_distance = 1e9f; // инфинити для начального сравнения
+
+    float best_distance = 1e9f;
     int   closest_index = -1;
 
     for (int i = 0; i < chain->ball_count; i++) {
@@ -614,44 +595,42 @@ static int find_best_insert_position_near_hit(const BallChain* chain,
         if (d < best_distance) { best_distance = d; closest_index = i; }
     }
 
-    if (closest_index < 0) return -1; // цепь пустая
+    if (closest_index < 0) return -1;
 
-    // понимаем с какой стороны снаряд подлетел к шару
-    // to_ball = вектор от точки попадания до ближайшего шара
+
     Vector2D to_ball = vector2d_subtract(chain->balls[closest_index].position, hit_position);
 
-    // dot > 0 — шар впереди до него вставка
-    // dot < 0 — шар сзади вставка после
+
     float dot = to_ball.x * projectile_velocity.x + to_ball.y * projectile_velocity.y;
     return dot > 0 ? closest_index - 1 : closest_index;
-    (void)path; 
+    (void)path;
 }
 
-// двигаем цепь вперёд на один кадр
+
 static void advance_chain_along_path(BallChain* chain, const BallPath* path,
     float delta_time) {
 
-    // двигаем голову вперёд — все шары тянутся автоматически через оффсетик
+
     chain->head_distance_along_path += chain->movement_speed * delta_time;
 
-    // тикаем таймер комбо
+
     if (chain->combo_timer > 0) {
         chain->combo_timer -= delta_time;
-        if (chain->combo_timer <= 0) chain->combo_multiplier = 0; // комбо кончилось
+        if (chain->combo_timer <= 0) chain->combo_multiplier = 0;
     }
 
-    // обновляем анимации всех шаров
+
     for (int i = 0; i < chain->ball_count; i++) {
 
-        // шар ещё не дорос до полного размера — продолжаем увеличивать
+
         if (chain->balls[i].insert_animation_progress < 1.0f)
             chain->balls[i].insert_animation_progress += delta_time * INSERT_ANIMATION_SPEED;
 
-        // шар взрывается двигаем анимацию взрыва вперёд
+
         if (chain->balls[i].is_popping) {
             chain->balls[i].pop_animation_progress += delta_time * POP_ANIMATION_SPEED;
 
-            // анимация закончилась шар полностью исчез
+
             if (chain->balls[i].pop_animation_progress >= 1.0f) {
                 chain->balls[i].is_alive = 0;
                 chain->balls[i].is_popping = 0;
@@ -659,17 +638,16 @@ static void advance_chain_along_path(BallChain* chain, const BallPath* path,
         }
     }
 
-    // схлопываем зазоры которые образовались после взрывов
+
     for (int i = 0; i < chain->ball_count - 1; i++) {
         if (!chain->balls[i].is_alive || !chain->balls[i + 1].is_alive) continue;
 
-        // считаем зазор между соседними шарами
+
         float gap = (chain->head_distance_along_path + chain->balls[i].offset_from_chain_head)
             - (chain->head_distance_along_path + chain->balls[i + 1].offset_from_chain_head)
             - BALL_DIAMETER;
 
-        // если зазор больше полупикселя — подтягиваем следующий шар
-        //  каждый кадр закрываем 30% зазора
+
         if (gap > 0.5f)
             chain->balls[i + 1].offset_from_chain_head += gap * GAP_CLOSE_FACTOR;
     }
@@ -677,19 +655,18 @@ static void advance_chain_along_path(BallChain* chain, const BallPath* path,
     (void)path;
 }
 
-// проверяем дошла ли голова цепи до конца пути и теряем жизню
+
 static int chain_head_has_reached_end(const BallChain* chain,
     const BallPath* path) {
-    if (chain->ball_count == 0) return 0; // пустая цепь
+    if (chain->ball_count == 0) return 0;
 
-    // позиция самого первого шара на пути
+
     float head_pos = chain->head_distance_along_path
         + chain->balls[0].offset_from_chain_head;
 
-    return head_pos >= path->total_path_length; // 1 если достигли конца
+    return head_pos >= path->total_path_length;
 }
 
-//бот - жадный алгос и лукхэд
 
 static int simulate_score_if_ball_inserted_at(const BallChain* chain,
     int index, BallColor color) {
@@ -711,15 +688,10 @@ static int simulate_score_if_ball_inserted_at(const BallChain* chain,
     return score;
 }
 
-// ---- Оптимизация №1 (алгоритмическая): оценка вставки без копирования цепи ----
-// Старая simulate_score_if_ball_inserted_at копирует всю структуру BallChain (~16 КБ)
-// на каждую пробную вставку. Новый вариант один раз за O(N) строит таблицу длин серий,
-// после чего оценка любой вставки считается за O(1) без копирования и memmove.
-// Старая функция оставлена как эталон: бенчмарк сверяет с ней результаты новой.
 
 typedef struct {
-    int left[MAX_BALLS_IN_CHAIN];   // left[i]  = длина серии, заканчивающейся в шаре i (включая его)
-    int right[MAX_BALLS_IN_CHAIN];  // right[i] = длина серии, начинающейся в шаре i (включая его)
+    int left[MAX_BALLS_IN_CHAIN];
+    int right[MAX_BALLS_IN_CHAIN];
 } RunTable;
 
 static int ball_is_matchable(const ChainBall* b) {
@@ -745,11 +717,11 @@ static void build_run_table(const BallChain* chain, RunTable* table) {
 static int score_if_ball_inserted_at_fast(const BallChain* chain, const RunTable* table,
     int index, BallColor color) {
     int n = chain->ball_count;
-    if (n >= MAX_BALLS_IN_CHAIN - 1) return 0;   // как и в insert_projectile_into_chain
+    if (n >= MAX_BALLS_IN_CHAIN - 1) return 0;
     if (index < -1) index = -1;
     if (index >= n) index = n - 1;
 
-    // новый шар встаёт между index и index+1; серия растёт в обе стороны
+
     int left_len = 0;
     if (index >= 0 && ball_is_matchable(&chain->balls[index]) &&
         chain->balls[index].color == color)
@@ -764,11 +736,11 @@ static int score_if_ball_inserted_at_fast(const BallChain* chain, const RunTable
     if (run_len < MINIMUM_MATCH_LENGTH) return 0;
 
     int score = run_len * 100;
-    int left_neighbor = index - left_len;          // шар слева от серии
-    int right_neighbor = index + 1 + right_len;    // шар справа от серии
+    int left_neighbor = index - left_len;
+    int right_neighbor = index + 1 + right_len;
     if (left_neighbor >= 0 && right_neighbor < n &&
         chain->balls[left_neighbor].color == chain->balls[right_neighbor].color)
-        score += 200;                              // бонус за «цепную реакцию»
+        score += 200;
     return score;
 }
 
@@ -805,7 +777,7 @@ static void bot_analyze_chain_and_choose_best_shot(BotAI* bot_ai,
         int score_next_ball = score_if_ball_inserted_at_fast(
             chain, &run_table, i, player_cannon->next_ball);
 
-        BallColor best_color_here = (score_next_ball > score_current_ball) 
+        BallColor best_color_here = (score_next_ball > score_current_ball)
             ? player_cannon->next_ball
             : player_cannon->loaded_ball;
 
@@ -913,7 +885,6 @@ static void bot_update_aim_and_fire_when_ready(BotAI* bot_ai,
     (void)chain;
 }
 
-// с подсказками не интересно 
 
 static void compute_and_show_hint(HintOverlay* hint_overlay,
     const BallChain* chain,
@@ -972,7 +943,6 @@ static void tick_hint_display_timer(HintOverlay* hint_overlay,const BallChain* c
     }
 }
 
-//рендеринг 
 
 static const float BALL_RGB_COLORS[NUMBER_OF_COLORS][3] = {
     {0.95f, 0.25f, 0.20f},
@@ -1050,7 +1020,7 @@ static void renderer_initialize(Renderer* r) {
 
 static void flush_vertex_buffer_to_gpu(Renderer* r) {
     if (r->buffered_vertex_count == 0) return;
-    if (bench_mode) {                       // без окна GL не вызываем, только считаем вершины
+    if (bench_mode) {
         bench_vertex_total += r->buffered_vertex_count;
         r->buffered_vertex_count = 0;
         return;
@@ -1213,7 +1183,6 @@ static void renderer_cleanup(Renderer* r) {
     glDeleteProgram(r->shader_flat);
 }
 
-//рисуем буквы
 
 static const unsigned char BITMAP_FONT_5X7[128][7] = {
     [' '] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
@@ -1289,7 +1258,6 @@ static void draw_integer_value(Renderer* r, int value,
     draw_text_string(r, buffer, x, y, scale, cr, cg, cb, ca);
 }
 
-//лвл
 
 static void load_level_and_reset_game(int level_index) {
     const LevelDefinition* level = &GAME_LEVELS[level_index];
@@ -1319,30 +1287,28 @@ static void load_level_and_reset_game(int level_index) {
     current_game_state = bot_mode_enabled ? GAME_STATE_BOT_PLAYING : GAME_STATE_PLAYING;
 }
 
-//попадание шарика в цепь
 
-// обрабатываем попадание снаряда в цепочку
 static void handle_projectile_hit_chain(int projectile_index) {
     FiredProjectile* p = &projectiles[projectile_index];
 
-    // находим куда вставить и вставляем
+
     int insert_pos = find_best_insert_position_near_hit(&ball_chain, &level_path,
         p->position, p->velocity);
     int inserted = insert_projectile_into_chain(&ball_chain, insert_pos, p->color);
 
     if (inserted >= 0) {
         int score_earned = 0;
-        // проверяем совпадения и взрываем если нужно
+
         pop_matched_balls_and_check_cascade(&ball_chain, inserted, &score_earned);
         if (score_earned > 0) {
             player.score += score_earned;
-            score_popup_timer = 1.5f;           // показываем попап с очками
+            score_popup_timer = 1.5f;
             score_popup_value = score_earned;
             score_popup_position = p->position;
         }
     }
 
-    // деактивируем снаряд и убираем его из массива
+
     p->is_active = 0;
     int write = 0;
     for (int i = 0; i < active_projectile_count; i++)
@@ -1351,36 +1317,32 @@ static void handle_projectile_hit_chain(int projectile_index) {
     active_projectile_count = write;
 }
 
-//стрельба
 
-// стреляем шаром из пушки
 static void fire_ball_from_cannon(float angle) {
-    if (active_projectile_count >= MAX_PROJECTILES) return; // слишком много снарядов в воздухе
+    if (active_projectile_count >= MAX_PROJECTILES) return;
 
     FiredProjectile* p = &projectiles[active_projectile_count++];
 
-    // снаряд стартует у кончика ствола, а не в центре пушки
-    // иначе он сразу же столкнётся с пушкой
+
     float barrel_len = BALL_RADIUS * 2.5f;
     p->position = (Vector2D){
         cannon.position.x + cosf(angle) * barrel_len,
         cannon.position.y + sinf(angle) * barrel_len
     };
 
-    // скорость = направление * константа скорости
+
     p->velocity = (Vector2D){
         cosf(angle) * PROJECTILE_SPEED,
         sinf(angle) * PROJECTILE_SPEED
     };
-    p->color = cannon.loaded_ball; // цвет берём из пушки
+    p->color = cannon.loaded_ball;
     p->is_active = 1;
 
-    // перезаряжаем: следующий становится текущим, генерируем новый следующий
+
     cannon.loaded_ball = cannon.next_ball;
     cannon.next_ball = pick_random_color(GAME_LEVELS[player.current_level].number_of_colors);
 }
 
-//обнова
 
 static void update_game_logic(float delta_time) {
     if (death_pause_timer > 0.0f) {
@@ -1456,7 +1418,6 @@ static void update_game_logic(float delta_time) {
     }
 }
 
-//рендер экранчиков
 
 static void render_gameplay_hud(void) {
     draw_text_string(&renderer, "SCORE", 20, 20, 2.5f, 0.7f, 0.7f, 0.8f, 1.0f);
@@ -1557,7 +1518,7 @@ static void render_level_win_screen(void) {
     draw_text_string(&renderer, score_text, cx - 100, cy + 40, 3.5f, 1, 1, 1, 1);
     draw_text_string(&renderer, "PRESS ENTER", cx - 90, cy + 90, 2.8f, 0.9f, 0.9f, 0.5f, 0.9f);
 }
-// если вдруг получилось проиграть
+
 static void render_game_over_screen(void) {
     float cx = WINDOW_WIDTH / 2.0f, cy = WINDOW_HEIGHT / 2.0f;
     draw_filled_rectangle(&renderer, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0.15f, 0.02f, 0.02f, 0.7f);
@@ -1567,48 +1528,47 @@ static void render_game_over_screen(void) {
     draw_text_string(&renderer, score_text, cx - 90, cy + 40, 3.5f, 1, 1, 1, 1);
     draw_text_string(&renderer, "PRESS ENTER", cx - 90, cy + 90, 2.8f, 0.9f, 0.9f, 0.5f, 0.9f);
 
-    // анимация смерти — показываем поверх экрана game over если ещё идёт
+
     if (death_flash_timer > 0.0f) {
-        // нормализуем таймер в [0, 1]
+
         float flash = death_flash_timer / 1.2f;
 
-        // треугольная волна: нарастает в первой половине, убывает во второй
-        float alpha = flash < 0.5f
-            ? flash * 1.4f           // нарастание
-            : (1.0f - flash) * 1.4f; // убывание
 
-        // красный полупрозрачный оверлей
+        float alpha = flash < 0.5f
+            ? flash * 1.4f
+            : (1.0f - flash) * 1.4f;
+
+
         draw_filled_rectangle(&renderer, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
             0.85f, 0.05f, 0.05f, alpha * 0.55f);
 
-        // надпись LIFE LOST появляется после первой четверти анимации
+
         if (flash > 0.25f) {
             float text_alpha = (flash - 0.25f) / 0.75f;
             float cx = WINDOW_WIDTH / 2.0f - 140.0f;
             float cy = WINDOW_HEIGHT / 2.0f - 25.0f;
 
-            // сначала тень (сдвинута на 3px), потом сам текст поверх
+
             draw_text_string(&renderer, "LIFE LOST",
                 cx + 3, cy + 3, 6.0f, 0.0f, 0.0f, 0.0f, text_alpha * 0.7f);
             draw_text_string(&renderer, "LIFE LOST",
                 cx, cy, 6.0f, 1.0f, 0.25f, 0.25f, text_alpha);
         }
 
-        // красная рамка по краям экрана
+
         float edge = alpha * 0.7f;
-        float ew = 18.0f; // толщина рамки в пикселях
+        float ew = 18.0f;
         draw_filled_rectangle(&renderer, 0, 0, WINDOW_WIDTH, ew,
-            1.0f, 0.1f, 0.1f, edge); // верх
+            1.0f, 0.1f, 0.1f, edge);
         draw_filled_rectangle(&renderer, 0, WINDOW_HEIGHT - ew, WINDOW_WIDTH, ew,
-            1.0f, 0.1f, 0.1f, edge); // низ
+            1.0f, 0.1f, 0.1f, edge);
         draw_filled_rectangle(&renderer, 0, 0, ew, WINDOW_HEIGHT,
-            1.0f, 0.1f, 0.1f, edge); // лево
+            1.0f, 0.1f, 0.1f, edge);
         draw_filled_rectangle(&renderer, WINDOW_WIDTH - ew, 0, ew, WINDOW_HEIGHT,
-            1.0f, 0.1f, 0.1f, edge); // право
+            1.0f, 0.1f, 0.1f, edge);
     }
 }
 
-//основа ввод 
 
 static void on_key_pressed(GLFWwindow* window, int key, int scancode,
     int action, int mods) {
@@ -1681,13 +1641,12 @@ static void on_mouse_moved(GLFWwindow* window, double x, double y) {
     mouse_position = (Vector2D){ (float)x, (float)y };
 }
 
-// ======================= БЕНЧМАРК (запуск: Zuma.exe --bench) =======================
 
 static double bench_now_ms(void) {
     return (double)clock() * 1000.0 / (double)CLOCKS_PER_SEC;
 }
 
-// Повторяет statement, пока суммарное время не превысит 300 мс, и возвращает мс на один вызов
+
 #define BENCH_TIME_PER_CALL(result, statement)                          \
     do {                                                                \
         long reps_ = 1;                                                 \
@@ -1707,7 +1666,7 @@ static unsigned int bench_hash_step(unsigned int h, unsigned int v) {
     return (h ^ v) * 16777619u;
 }
 
-// Тест 1: масштабирование анализа бота по числу шаров N
+
 static void bench_bot_scaling(void) {
     load_level_and_reset_game(0);
     int sizes[] = { 25, 50, 100, 200, 400 };
@@ -1727,7 +1686,7 @@ static void bench_bot_scaling(void) {
     }
 }
 
-// Тест 2: масштабирование подсказки (та же идея, что у бота)
+
 static void bench_hint_scaling(void) {
     load_level_and_reset_game(0);
     int sizes[] = { 25, 50, 100, 200, 400 };
@@ -1746,7 +1705,7 @@ static void bench_hint_scaling(void) {
     }
 }
 
-// Тест 3: реальный игровой цикл, играет бот, уровень 1 (30 шаров), без отрисовки
+
 static void bench_game_loop(void) {
     srand(42);
     bot_mode_enabled = 1;
@@ -1782,13 +1741,13 @@ static void bench_game_loop(void) {
     double t1 = bench_now_ms();
 
     printf("game_loop,%d,%.6f,us_per_frame\n", frames, (t1 - t0) * 1000.0 / frames);
-    // контрольные значения: после оптимизации они должны совпасть с исходной версией
+
     printf("check_wins,%ld,,\ncheck_game_overs,%ld,,\ncheck_total_score,%lld,,\n",
         wins, game_overs, total_score);
     printf("check_fingerprint,%08x,,\n", fingerprint);
 }
 
-// Подготовка вершин для одного кадра (без вызовов OpenGL)
+
 static void bench_render_one_frame(void) {
     renderer.buffered_vertex_count = 0;
     renderer.active_shader_mode = -1;
@@ -1823,7 +1782,7 @@ static void bench_render_hud_only(void) {
     renderer_end_frame(&renderer);
 }
 
-// Тест 4: CPU-часть отрисовки кадра
+
 static void bench_render_cpu(void) {
     srand(7);
     bot_mode_enabled = 1;
@@ -1831,7 +1790,7 @@ static void bench_render_cpu(void) {
     player.lives_remaining = 3;
     player.current_level = 0;
     load_level_and_reset_game(0);
-    for (int i = 0; i < 600; i++) update_game_logic(1.0f / 60.0f);   // «прогрев» 10 секунд игры
+    for (int i = 0; i < 600; i++) update_game_logic(1.0f / 60.0f);
 
     double ms;
     bench_vertex_total = 0;
@@ -1846,7 +1805,7 @@ static void bench_render_cpu(void) {
     printf("render_hud_cpu,1,%.6f,ms_per_frame\n", ms);
 }
 
-// Тест 5: новая оценка вставки должна давать те же очки, что и эталон (со старым memcpy)
+
 static void bench_check_score_equivalence(void) {
     static BallChain chain;
     long mismatches = 0, comparisons = 0;
@@ -1876,7 +1835,7 @@ static void bench_check_score_equivalence(void) {
     printf("check_score_equivalence_mismatches,%ld,of_%ld,\n", mismatches, comparisons);
 }
 
-// Тест: поиск позиции на пути по пройденной длине (get_position_at_path_distance)
+
 static float bench_sink;
 
 static void bench_path_lookup_batch(const float* distances, int count) {
@@ -1885,7 +1844,7 @@ static void bench_path_lookup_batch(const float* distances, int count) {
         Vector2D p = get_position_at_path_distance(&level_path, distances[i]);
         acc += p.x + p.y;
     }
-    bench_sink += acc;   // чтобы компилятор не выбросил вызовы
+    bench_sink += acc;
 }
 
 static void bench_path_lookup(void) {
@@ -1900,7 +1859,7 @@ static void bench_path_lookup(void) {
     printf("path_lookup,%d,%.3f,ns_per_lookup\n", level_path.total_points, ms * 1e6 / 4096.0);
 }
 
-// Тест 6: новый поиск позиции на пути должен совпадать с эталоном (бинарный поиск) до бита
+
 static void bench_path_lookup_reference_batch(const float* distances, int count) {
     float acc = 0.0f;
     for (int i = 0; i < count; i++) {
@@ -1916,7 +1875,7 @@ static void bench_check_path_lookup(void) {
     for (int level = 0; level < (int)(sizeof(GAME_LEVELS) / sizeof(GAME_LEVELS[0])); level++) {
         load_level_and_reset_game(level);
         const BallPath* path = &level_path;
-        // граничные значения: сами узлы пути и значения чуть левее/правее них
+
         for (int i = 0; i < path->total_points; i++) {
             float base = path->arc_length_at_point[i];
             float probes[3] = { base, nextafterf(base, -1e9f), nextafterf(base, 1e9f) };
@@ -1927,7 +1886,7 @@ static void bench_check_path_lookup(void) {
                 if (memcmp(&a, &b, sizeof(a)) != 0) mismatches++;
             }
         }
-        // случайные значения
+
         for (int i = 0; i < 200000; i++) {
             float d = (path->total_path_length + 20.0f) * ((float)rand() / (float)RAND_MAX) - 10.0f;
             Vector2D a = get_position_at_path_distance(path, d);
@@ -1938,7 +1897,7 @@ static void bench_check_path_lookup(void) {
     }
     printf("check_path_lookup_mismatches,%ld,of_%ld,\n", mismatches, comparisons);
 
-    // скорость эталона для сравнения «в одном запуске»
+
     load_level_and_reset_game(0);
     srand(99);
     for (int i = 0; i < 4096; i++)
@@ -1964,7 +1923,6 @@ static int run_benchmarks(void) {
     return 0;
 }
 
-//мэйн
 
 int main(int argc, char** argv) {
     if (argc > 1 && strcmp(argv[1], "--bench") == 0)
