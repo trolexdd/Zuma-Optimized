@@ -1080,17 +1080,33 @@ static void draw_colored_ball(Renderer* r, Vector2D pos, BallColor color,
         BALL_RGB_COLORS[color][2], alpha);
 }
 
+#define CIRCLE_SEGMENTS 32
+static float circle_cos_table[CIRCLE_SEGMENTS + 1];
+static float circle_sin_table[CIRCLE_SEGMENTS + 1];
+static int   circle_tables_ready = 0;
+
+static void fill_circle_tables(void) {
+    if (circle_tables_ready) return;
+    for (int i = 0; i <= CIRCLE_SEGMENTS; i++) {
+        float a = 2 * PI * i / (float)CIRCLE_SEGMENTS;
+        circle_cos_table[i] = cosf(a);
+        circle_sin_table[i] = sinf(a);
+    }
+    circle_tables_ready = 1;
+}
+
 static void draw_filled_circle(Renderer* r, Vector2D pos, float radius,
     float cr, float cg, float cb, float ca) {
     switch_shader_mode(r, 1);
-    for (int i = 0; i < 32; i++) {
-        float a0 = 2 * PI * i / 32.0f, a1 = 2 * PI * (i + 1) / 32.0f;
+    for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
+        float c0 = circle_cos_table[i], s0 = circle_sin_table[i];
+        float c1 = circle_cos_table[i + 1], s1 = circle_sin_table[i + 1];
         if (r->buffered_vertex_count + 3 > RENDERER_MAX_VERTICES)
             flush_vertex_buffer_to_gpu(r);
         RenderVertex* v = &r->vertex_buffer[r->buffered_vertex_count];
-        v[0] = (RenderVertex){ pos.x,                 pos.y,                 cr,cg,cb,ca, 0,0 };
-        v[1] = (RenderVertex){ pos.x + cosf(a0) * radius, pos.y + sinf(a0) * radius, cr,cg,cb,ca, 0,0 };
-        v[2] = (RenderVertex){ pos.x + cosf(a1) * radius, pos.y + sinf(a1) * radius, cr,cg,cb,ca, 0,0 };
+        v[0] = (RenderVertex){ pos.x,               pos.y,               cr,cg,cb,ca, 0,0 };
+        v[1] = (RenderVertex){ pos.x + c0 * radius, pos.y + s0 * radius, cr,cg,cb,ca, 0,0 };
+        v[2] = (RenderVertex){ pos.x + c1 * radius, pos.y + s1 * radius, cr,cg,cb,ca, 0,0 };
         r->buffered_vertex_count += 3;
     }
 }
@@ -1099,18 +1115,20 @@ static void draw_circle_outline(Renderer* r, Vector2D pos, float radius,
     float cr, float cg, float cb, float ca,
     float thickness) {
     switch_shader_mode(r, 1);
+    fill_circle_tables();
     float inner = radius - thickness;
-    for (int i = 0; i < 32; i++) {
-        float a0 = 2 * PI * i / 32.0f, a1 = 2 * PI * (i + 1) / 32.0f;
+    for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
+        float c0 = circle_cos_table[i], s0 = circle_sin_table[i];
+        float c1 = circle_cos_table[i + 1], s1 = circle_sin_table[i + 1];
         if (r->buffered_vertex_count + 6 > RENDERER_MAX_VERTICES)
             flush_vertex_buffer_to_gpu(r);
         RenderVertex* v = &r->vertex_buffer[r->buffered_vertex_count];
-        v[0] = (RenderVertex){ pos.x + cosf(a0) * inner,  pos.y + sinf(a0) * inner,  cr,cg,cb,ca, 0,0 };
-        v[1] = (RenderVertex){ pos.x + cosf(a0) * radius, pos.y + sinf(a0) * radius, cr,cg,cb,ca, 0,0 };
-        v[2] = (RenderVertex){ pos.x + cosf(a1) * radius, pos.y + sinf(a1) * radius, cr,cg,cb,ca, 0,0 };
-        v[3] = (RenderVertex){ pos.x + cosf(a0) * inner,  pos.y + sinf(a0) * inner,  cr,cg,cb,ca, 0,0 };
-        v[4] = (RenderVertex){ pos.x + cosf(a1) * radius, pos.y + sinf(a1) * radius, cr,cg,cb,ca, 0,0 };
-        v[5] = (RenderVertex){ pos.x + cosf(a1) * inner,  pos.y + sinf(a1) * inner,  cr,cg,cb,ca, 0,0 };
+        v[0] = (RenderVertex){ pos.x + c0 * inner,  pos.y + s0 * inner,  cr,cg,cb,ca, 0,0 };
+        v[1] = (RenderVertex){ pos.x + c0 * radius, pos.y + s0 * radius, cr,cg,cb,ca, 0,0 };
+        v[2] = (RenderVertex){ pos.x + c1 * radius, pos.y + s1 * radius, cr,cg,cb,ca, 0,0 };
+        v[3] = (RenderVertex){ pos.x + c0 * inner,  pos.y + s0 * inner,  cr,cg,cb,ca, 0,0 };
+        v[4] = (RenderVertex){ pos.x + c1 * radius, pos.y + s1 * radius, cr,cg,cb,ca, 0,0 };
+        v[5] = (RenderVertex){ pos.x + c1 * inner,  pos.y + s1 * inner,  cr,cg,cb,ca, 0,0 };
         r->buffered_vertex_count += 6;
     }
 }
