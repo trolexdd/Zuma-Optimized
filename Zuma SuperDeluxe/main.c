@@ -1260,11 +1260,20 @@ static void draw_single_character(Renderer* r, char ch, float x, float y,
     unsigned char idx = (unsigned char)ch;
     if (idx >= 128) return;
     for (int row = 0; row < 7; row++) {
-        for (int col = 0; col < 8; col++) {
-            if (BITMAP_FONT_5X7[idx][row] & (0x80 >> col))
-                draw_filled_rectangle(r,
-                    x + col * scale, y + row * scale,
-                    scale, scale, cr, cg, cb, ca);
+        unsigned char bits = BITMAP_FONT_5X7[idx][row];
+        if (!bits) continue;
+
+        int col = 0;
+        while (col < 8) {
+            if (!(bits & (0x80 >> col))) {
+                col++;
+                continue;
+            }
+            int start = col;
+            while (col < 8 && (bits & (0x80 >> col))) col++;
+
+            draw_filled_rectangle(r, x + start * scale, y + row * scale,
+                (col - start) * scale, scale, cr, cg, cb, ca);
         }
     }
 }
