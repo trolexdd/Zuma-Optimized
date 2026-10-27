@@ -153,6 +153,10 @@ typedef struct {
     float        ortho_projection[16];
 } Renderer;
 
+static RenderVertex path_vertex_cache[(MAX_PATH_POINTS - 1) * 6];
+static int path_vertex_cache_count = 0;
+static int path_vertex_cache_valid = 0;
+
 
 static const LevelDefinition GAME_LEVELS[] = {
     {
@@ -1111,21 +1115,24 @@ static void draw_circle_outline(Renderer* r, Vector2D pos, float radius,
     }
 }
 
-static void draw_thick_line(Renderer* r, Vector2D from, Vector2D to,
-    float cr, float cg, float cb, float ca,
-    float thickness) {
-    switch_shader_mode(r, 1);
+static void write_thick_line_vertex(RenderVertex* v, Vector2D from, Vector2D to,
+    float cr, float cg, float cb, float ca, float thickness) {
     Vector2D dir = vector2d_normalize(vector2d_subtract(to, from));
     Vector2D normal = { -dir.y * thickness * 0.5f, dir.x * thickness * 0.5f };
-    if (r->buffered_vertex_count + 6 > RENDERER_MAX_VERTICES)
-        flush_vertex_buffer_to_gpu(r);
-    RenderVertex* v = &r->vertex_buffer[r->buffered_vertex_count];
     v[0] = (RenderVertex){ from.x - normal.x, from.y - normal.y, cr,cg,cb,ca, 0,0 };
     v[1] = (RenderVertex){ from.x + normal.x, from.y + normal.y, cr,cg,cb,ca, 0,0 };
     v[2] = (RenderVertex){ to.x + normal.x, to.y + normal.y, cr,cg,cb,ca, 0,0 };
     v[3] = (RenderVertex){ from.x - normal.x, from.y - normal.y, cr,cg,cb,ca, 0,0 };
     v[4] = (RenderVertex){ to.x + normal.x, to.y + normal.y, cr,cg,cb,ca, 0,0 };
     v[5] = (RenderVertex){ to.x - normal.x, to.y - normal.y, cr,cg,cb,ca, 0,0 };
+}
+
+static void draw_thick_line(Renderer* r, Vector2D from, Vector2D to,
+    float cr, float cg, float cb, float ca, float thickness) {
+    switch_shader_mode(r, 1);
+    if (r->buffered_vertex_count + 6 > RENDERER_MAX_VERTICES)
+        flush_vertex_buffer_to_gpu(r);
+    write_thick_line_vertex(&r->vertex_buffer[r->buffered_vertex_count], from, to, cr, cg, cb, ca, thickness);
     r->buffered_vertex_count += 6;
 }
 
@@ -1146,10 +1153,30 @@ static void draw_dashed_trajectory(Renderer* r, Vector2D from, Vector2D to) {
     }
 }
 
+static void rebuild_path_vertex_cache(const BallPath* path) {
+    path_vertex_cache_count = 0;
+
+    for (int i = 0; i < path->total_points - 1; i++) {
+        write_thick_line_vertex(&path_vertex_cache[path_vertex_cache_count],
+            path->points[i], path->points[i + 1], 0.3f, 0.3f, 0.4f, 0.5f, 4.0f);
+        path_vertex_cache_count += 6;
+    }
+    path_vertex_cache_valid = 1;
+}
+
 static void draw_entire_path(Renderer* r, const BallPath* path) {
-    for (int i = 0; i < path->total_points - 1; i++)
-        draw_thick_line(r, path->points[i], path->points[i + 1],
-            0.3f, 0.3f, 0.4f, 0.5f, 4.0f);
+    if (!path_vertex_cache_valid)
+        rebuild_path_vertex_cache(path);
+
+    switch_shader_mode(r, 1);
+
+    if (r->buffered_vertex_count + path_vertex_cache_count > RENDERER_MAX_VERTICES)
+        flush_vertex_buffer_to_gpu(r);
+
+    memcpy(&r->vertex_buffer[r->buffered_vertex_count], path_vertex_cache,
+        path_vertex_cache_count * sizeof(RenderVertex));
+
+    r->buffered_vertex_count += path_vertex_cache_count;
 }
 
 static void draw_cannon_with_next_ball(Renderer* r, const Cannon* c) {
@@ -1283,6 +1310,7 @@ static void load_level_and_reset_game(int level_index) {
     bot.has_target = 0;
     hint.is_visible = 0;
     win_animation_timer = 0.0f;
+    path_vertex_cache_valid = 0;
 
     current_game_state = bot_mode_enabled ? GAME_STATE_BOT_PLAYING : GAME_STATE_PLAYING;
 }
