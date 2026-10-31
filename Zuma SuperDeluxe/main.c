@@ -6,6 +6,18 @@
 #include <math.h>
 #include <time.h>
 #include <immintrin.h>
+#include <stdint.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define ALIGN32 __declspec(align(32))
+#else
+#define ALIGN32 __attribute__((aligned(32)))
+#endif
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#define AVX2_TARGET __attribute__((target("avx2")))
+#else
+#define AVX2_TARGET
+#endif
 
 
 #define WINDOW_WIDTH          1280
@@ -251,8 +263,8 @@ static int               score_popup_value;
 static Vector2D          score_popup_position;
 static float death_flash_timer = 0.0f;
 static float death_pause_timer = 0.0f;
-static __declspec(align(32)) float ball_x[MAX_BALLS_IN_CHAIN + 8];
-static __declspec(align(32)) float ball_y[MAX_BALLS_IN_CHAIN + 8];
+static ALIGN32 float ball_x[MAX_BALLS_IN_CHAIN + 8];
+static ALIGN32 float ball_y[MAX_BALLS_IN_CHAIN + 8];
 
 
 static int       bench_mode = 0;
@@ -906,6 +918,7 @@ static void bot_update_aim_and_fire_when_ready(BotAI* bot_ai,
 
     if (fabsf(angle_diff) < BOT_AIM_TOLERANCE &&
         bot_ai->fire_cooldown <= 0.0f) {
+        if (active_projectile_count >= MAX_PROJECTILES) return;
         FiredProjectile* p = &projectiles[active_projectile_count++];
         p->position = player_cannon->position;
         p->velocity = (Vector2D){
@@ -1133,6 +1146,7 @@ static void fill_circle_tables(void) {
 static void draw_filled_circle(Renderer* r, Vector2D pos, float radius,
     float cr, float cg, float cb, float ca) {
     switch_shader_mode(r, 1);
+    fill_circle_tables();
     for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
         float c0 = circle_cos_table[i], s0 = circle_sin_table[i];
         float c1 = circle_cos_table[i + 1], s1 = circle_sin_table[i + 1];
@@ -1433,26 +1447,30 @@ static void fire_ball_from_cannon(float angle) {
     cannon.next_ball = pick_random_color(GAME_LEVELS[player.current_level].number_of_colors);
 }
 
-static int find_first_ball_hit_avx2(float px, float py) {
-    const __m256 vpx = _mm256_set1_ps(px);
-    const __m256 vpy = _mm256_set1_ps(py);
-    const __m256 vlimit = _mm256_set1_ps(BALL_RADIUS * 1.8f);
-    int padded = (ball_chain.ball_count + 7) & ~7;
-
+AVX2_TARGET static int find_first_ball_hit_avx2(float px, float py) {
+    const __m256 vpx = _mm256_set1_ps(px), vpy = _mm256_set1_ps(py);
+    const __m256 limit2 = _mm256_set1_ps((BALL_RADIUS * 1.8f) * (BALL_RADIUS * 1.8f));
+    int n = ball_chain.ball_count;
+    int padded = (n + 7) & ~7;
     for (int j = 0; j < padded; j += 8) {
-        __m256 dx = _mm256_sub_ps(_mm256_load_ps(&ball_x[j]), vpx);
-        __m256 dy = _mm256_sub_ps(_mm256_load_ps(&ball_y[j]), vpy);
+        __m256 dx = _mm256_sub_ps(_mm256_load_ps(ball_x + j), vpx);
+        __m256 dy = _mm256_sub_ps(_mm256_load_ps(ball_y + j), vpy);
         __m256 d2 = _mm256_add_ps(_mm256_mul_ps(dx, dx), _mm256_mul_ps(dy, dy));
-        __m256 dist = _mm256_sqrt_ps(d2);
-        int mask = _mm256_movemask_ps(_mm256_cmp_ps(dist, vlimit, _CMP_LE_OQ));
+        unsigned mask = (unsigned)_mm256_movemask_ps(_mm256_cmp_ps(d2, limit2, _CMP_LE_OQ));
+        if (j + 8 > n) mask &= (1u << (n - j)) - 1u;
         if (mask) {
-            for (int k = 0; k < 8; k++) {
-                if (mask & (1 << k)) return j + k;
-            }
+#if defined(_MSC_VER)
+            unsigned long bit;
+            _BitScanForward(&bit, mask);
+            return j + (int)bit;
+#else
+            return j + __builtin_ctz(mask);
+#endif
         }
     }
     return -1;
 }
+#endif
 
 static void update_game_logic(float delta_time) {
     if (death_pause_timer > 0.0f) {
