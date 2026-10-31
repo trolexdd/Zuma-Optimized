@@ -6,6 +6,12 @@
 #include <math.h>
 #include <time.h>
 #include <immintrin.h>
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#pragma comment(lib, "winmm.lib")
+unsigned int __stdcall timeBeginPeriod(unsigned int);
+unsigned int __stdcall timeEndPeriod(unsigned int);
 #include <stdint.h>
 #define CACHE_LINE_SIZE 64
 #if defined(_MSC_VER) 
@@ -2050,6 +2056,38 @@ static int run_benchmarks(void) {
     return 0;
 }
 
+#define LOGIC_HZ    240.0
+#define PIN_THREADS 1
+
+static CRITICAL_SECTION game_lock;
+static volatile LONG    logic_running = 1;
+
+static DWORD WINAPI logic_thread_main(LPVOID unused) {
+    (void)unused;
+    srand((unsigned int)time(NULL) ^ 0x9E3779B9u);
+
+    LARGE_INTEGER freq, last, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&last);
+    const double step = 1.0 / LOGIC_HZ;
+    double acc = 0.0;
+
+    while (logic_running) {
+        QueryPerformanceCounter(&now);
+        acc += (double)(now.QuadPart - last.QuadPart) / (double)freq.QuadPart;
+        last = now;
+        if (acc > 0.25) acc = 0.25;
+        if (acc < step) { Sleep(1); continue; }
+
+        EnterCriticalSection(&game_lock);
+        while (acc >= step) {
+            if (current_game_state == GAME_STATE_PLAYING || current_game_state == GAME_STATE_BOT_PLAYING)update_game_logic((float)step);
+            acc -= step;
+        }
+        LeaveCriticalSection(&game_lock);
+    }
+    return 0;
+}
 
 int main(int argc, char** argv) {
     if (argc > 1 && strcmp(argv[1], "--bench") == 0)
@@ -2102,9 +2140,22 @@ int main(int argc, char** argv) {
     glfwSetMouseButtonCallback(window, on_mouse_button_clicked);
     glfwSetCursorPosCallback(window, on_mouse_moved);
 
+    InitializeCriticalSection(&game_lock);
+    timeBeginPeriod(1);
+    HANDLE logic_thread = CreateThread(NULL, 0, logic_thread_main, NULL, 0, NULL);
+    #if PIN_THREADS
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    if (si.dwNumberOfProcessors >= 4) {
+        SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)1 << 0);
+        SetThreadAffinityMask(logic_thread, (DWORD_PTR)1 << 2);
+    }
+    #endif
+
     double previous_time = glfwGetTime();
 
     while (!glfwWindowShouldClose(window)) {
+        EnterCriticalSection(&game_lock);
         glfwPollEvents();
 
         double current_time = glfwGetTime();
@@ -2120,7 +2171,6 @@ int main(int argc, char** argv) {
         }
         else if (current_game_state == GAME_STATE_PLAYING ||
             current_game_state == GAME_STATE_BOT_PLAYING) {
-            update_game_logic(delta_time);
             draw_entire_path(&renderer, &level_path);
 
             for (int i = 0; i < ball_chain.ball_count; i++) {
@@ -2154,9 +2204,14 @@ int main(int argc, char** argv) {
         }
 
         renderer_end_frame(&renderer);
+        LeaveCriticalSection(&game_lock);
         glfwSwapBuffers(window);
     }
-
+    InterlockedExchange(&logic_running, 0);
+    WaitForSingleObject(logic_thread, INFINITE);
+    CloseHandle(logic_thread);
+    DeleteCriticalSection(&game_lock);
+    timeEndPeriod(1);
     renderer_cleanup(&renderer);
     glfwDestroyWindow(window);
     glfwTerminate();
