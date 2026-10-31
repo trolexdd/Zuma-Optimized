@@ -7,11 +7,11 @@
 #include <time.h>
 #include <immintrin.h>
 #include <stdint.h>
-#if defined(_MSC_VER)
-#include <intrin.h>
-#define ALIGN32 __declspec(align(32))
-#else
-#define ALIGN32 __attribute__((aligned(32)))
+#define CACHE_LINE_SIZE 64
+#if defined(_MSC_VER) 
+#define CACHELINE_ALIGN __declspec(align(CACHE_LINE_SIZE)) 
+#else 
+#define CACHELINE_ALIGN attribute((aligned(CACHE_LINE_SIZE))) 
 #endif
 #if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
 #define AVX2_TARGET __attribute__((target("avx2")))
@@ -263,8 +263,11 @@ static int               score_popup_value;
 static Vector2D          score_popup_position;
 static float death_flash_timer = 0.0f;
 static float death_pause_timer = 0.0f;
-static ALIGN32 float ball_x[MAX_BALLS_IN_CHAIN + 8];
-static ALIGN32 float ball_y[MAX_BALLS_IN_CHAIN + 8];
+#define BALL_ARRAY_CAPACITY \
+    ((MAX_BALLS_IN_CHAIN + 15) & ~15)
+
+static CACHELINE_ALIGN float ball_x[BALL_ARRAY_CAPACITY];
+static CACHELINE_ALIGN float ball_y[BALL_ARRAY_CAPACITY];
 
 
 static int       bench_mode = 0;
@@ -1470,7 +1473,6 @@ AVX2_TARGET static int find_first_ball_hit_avx2(float px, float py) {
     }
     return -1;
 }
-#endif
 
 static void update_game_logic(float delta_time) {
     if (death_pause_timer > 0.0f) {
