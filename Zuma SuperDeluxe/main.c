@@ -34,6 +34,7 @@
 #define GAP_CLOSE_FACTOR      0.3f
 #define MAX_DELTA_TIME        0.05f
 #define RENDERER_MAX_VERTICES 65536
+#define CHAIN_ROLLBACK_SPEED  600.0f
 
 
 typedef struct {
@@ -664,17 +665,30 @@ static void advance_chain_along_path(BallChain* chain, const BallPath* path,
     }
 
 
+    float gap_shift[MAX_BALLS_IN_CHAIN];
+    int   any_gap = 0;
+    float max_step = (chain->movement_speed + CHAIN_ROLLBACK_SPEED) * delta_time;
+
     for (int i = 0; i < chain->ball_count - 1; i++) {
+        gap_shift[i] = 0.0f;
         if (!chain->balls[i].is_alive || !chain->balls[i + 1].is_alive) continue;
 
-
-        float gap = (chain->head_distance_along_path + chain->balls[i].offset_from_chain_head)
-            - (chain->head_distance_along_path + chain->balls[i + 1].offset_from_chain_head)
+        float gap = chain->balls[i].offset_from_chain_head
+            - chain->balls[i + 1].offset_from_chain_head
             - BALL_DIAMETER;
 
+        if (gap > 0.5f) {
+            gap_shift[i] = gap < max_step ? gap : max_step;
+            any_gap = 1;
+        }
+    }
 
-        if (gap > 0.5f)
-            chain->balls[i + 1].offset_from_chain_head += gap * GAP_CLOSE_FACTOR;
+    if (any_gap) {
+        float shift = 0.0f;
+        for (int i = chain->ball_count - 2; i >= 0; i--) {
+            shift += gap_shift[i];
+            chain->balls[i].offset_from_chain_head -= shift;
+        }
     }
 
     (void)path;
