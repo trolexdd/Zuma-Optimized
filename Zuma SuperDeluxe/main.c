@@ -17,7 +17,7 @@ unsigned int __stdcall timeEndPeriod(unsigned int);
 #if defined(_MSC_VER) 
 #define CACHELINE_ALIGN __declspec(align(CACHE_LINE_SIZE)) 
 #else 
-#define CACHELINE_ALIGN attribute((aligned(CACHE_LINE_SIZE))) 
+#define CACHELINE_ALIGN __attribute__((aligned(CACHE_LINE_SIZE))) 
 #endif
 #if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
 #define AVX2_TARGET __attribute__((target("avx2")))
@@ -1552,62 +1552,79 @@ static void update_game_logic(float delta_time) {
 }
 
 
-static void render_gameplay_hud(void) {
+typedef struct {
+    GameState       state;
+    PlayerData      player;
+    BallChain       chain;
+    Cannon          cannon;
+    FiredProjectile projectiles[MAX_PROJECTILES];
+    int             projectile_count;
+    BotAI           bot;
+    HintOverlay     hint;
+    float           score_popup_timer;
+    int             score_popup_value;
+    Vector2D        score_popup_position;
+} RenderSnapshot;
+
+static RenderSnapshot snap;
+static void take_render_snapshot(void);
+
+static void render_gameplay_hud(const RenderSnapshot* s) {
     draw_text_string(&renderer, "SCORE", 20, 20, 2.5f, 0.7f, 0.7f, 0.8f, 1.0f);
-    draw_integer_value(&renderer, player.score, 20, 46, 3.0f, 1, 1, 1, 1);
+    draw_integer_value(&renderer, s->player.score, 20, 46, 3.0f, 1, 1, 1, 1);
 
     draw_text_string(&renderer, "LIVES", WINDOW_WIDTH - 120, 20, 2.5f, 0.7f, 0.7f, 0.8f, 1.0f);
-    for (int i = 0; i < player.lives_remaining; i++) {
+    for (int i = 0; i < s->player.lives_remaining; i++) {
         Vector2D lp = { (float)(WINDOW_WIDTH - 100 + i * 26), 50.0f };
         draw_colored_ball(&renderer, lp, BALL_COLOR_RED, 0.5f, 1.0f);
     }
 
-    draw_text_string(&renderer, GAME_LEVELS[player.current_level].display_name,
+    draw_text_string(&renderer, GAME_LEVELS[s->player.current_level].display_name,
         WINDOW_WIDTH / 2 - 40, 10, 2.5f, 0.9f, 0.9f, 0.5f, 1.0f);
 
     int balls_remaining = 0;
-    for (int i = 0; i < ball_chain.ball_count; i++)
-        if (ball_chain.balls[i].is_alive) balls_remaining++;
+    for (int i = 0; i < s->chain.ball_count; i++)
+        if (s->chain.balls[i].is_alive) balls_remaining++;
     draw_text_string(&renderer, "BALLS", WINDOW_WIDTH / 2 - 80, 32, 2.0f, 0.6f, 0.6f, 0.7f, 1.0f);
     draw_integer_value(&renderer, balls_remaining, WINDOW_WIDTH / 2 + 12, 32, 2.0f, 0.8f, 0.8f, 0.9f, 1.0f);
 
-    if (ball_chain.combo_multiplier > 1) {
+    if (s->chain.combo_multiplier > 1) {
         char combo_text[32];
-        snprintf(combo_text, sizeof(combo_text), "%dX COMBO", ball_chain.combo_multiplier);
+        snprintf(combo_text, sizeof(combo_text), "%dX COMBO", s->chain.combo_multiplier);
         draw_text_string(&renderer, combo_text,
             WINDOW_WIDTH / 2 - 60, WINDOW_HEIGHT - 50, 3.0f, 1.0f, 0.8f, 0.2f, 1.0f);
     }
 
-    if (current_game_state == GAME_STATE_BOT_PLAYING) {
+    if (s->state == GAME_STATE_BOT_PLAYING) {
         draw_text_string(&renderer, "BOT MODE", 20, WINDOW_HEIGHT - 35,
             2.5f, 0.4f, 0.9f, 0.6f, 0.9f);
-        if (bot.has_target) {
-            draw_circle_outline(&renderer, bot.computed_aim_position,
+        if (s->bot.has_target) {
+            draw_circle_outline(&renderer, s->bot.computed_aim_position,
                 BALL_RADIUS + 8, 0.4f, 1.0f, 0.6f, 0.8f, 2.5f);
-            draw_dashed_trajectory(&renderer, cannon.position, bot.computed_aim_position);
+            draw_dashed_trajectory(&renderer, s->cannon.position, s->bot.computed_aim_position);
         }
     }
 
-    if (hint.is_visible) {
+    if (s->hint.is_visible) {
         float pulse = 0.5f + 0.5f * sinf((float)glfwGetTime() * 6.0f);
-        draw_circle_outline(&renderer, hint.suggested_target_position,
+        draw_circle_outline(&renderer, s->hint.suggested_target_position,
             BALL_RADIUS + 10, 1, 1, 0, pulse, 3.0f);
-        draw_dashed_trajectory(&renderer, cannon.position,
-            hint.suggested_target_position);
+        draw_dashed_trajectory(&renderer, s->cannon.position,
+            s->hint.suggested_target_position);
         draw_text_string(&renderer, "HINT",
-            hint.suggested_target_position.x - 16,
-            hint.suggested_target_position.y - 38,
+            s->hint.suggested_target_position.x - 16,
+            s->hint.suggested_target_position.y - 38,
             2.0f, 1, 1, 0, pulse);
     }
 
-    if (score_popup_timer > 0.5f) {
+    if (s->score_popup_timer > 0.5f) {
         char popup_text[32];
-        snprintf(popup_text, sizeof(popup_text), "+%d", score_popup_value);
-        float alpha = (score_popup_timer - 0.5f) * 2.0f;
-        float offset = (1.5f - score_popup_timer) * 40.0f;
+        snprintf(popup_text, sizeof(popup_text), "+%d", s->score_popup_value);
+        float alpha = (s->score_popup_timer - 0.5f) * 2.0f;
+        float offset = (1.5f - s->score_popup_timer) * 40.0f;
         draw_text_string(&renderer, popup_text,
-            score_popup_position.x,
-            score_popup_position.y - offset,
+            s->score_popup_position.x,
+            s->score_popup_position.y - offset,
             3.0f, 1, 0.9f, 0.2f, alpha);
     }
 
@@ -1897,7 +1914,8 @@ static void bench_render_one_frame(void) {
         if (projectiles[i].is_active)
             draw_colored_ball(&renderer, projectiles[i].position, projectiles[i].color, 1.0f, 1.0f);
     draw_cannon_with_next_ball(&renderer, &cannon);
-    render_gameplay_hud();
+    take_render_snapshot();
+    render_gameplay_hud(&snap);
     renderer_end_frame(&renderer);
 }
 
@@ -1911,7 +1929,8 @@ static void bench_render_path_only(void) {
 static void bench_render_hud_only(void) {
     renderer.buffered_vertex_count = 0;
     renderer.active_shader_mode = -1;
-    render_gameplay_hud();
+    take_render_snapshot();
+    render_gameplay_hud(&snap);
     renderer_end_frame(&renderer);
 }
 
@@ -2056,7 +2075,58 @@ static int run_benchmarks(void) {
     return 0;
 }
 
-#define LOGIC_HZ    240.0
+
+static void take_render_snapshot(void) {
+    snap.state = current_game_state;
+    snap.player = player;
+    snap.chain = ball_chain;
+    snap.cannon = cannon;
+    snap.projectile_count = active_projectile_count;
+    memcpy(snap.projectiles, projectiles, sizeof(projectiles));
+    snap.bot = bot;
+    snap.hint = hint;
+    snap.score_popup_timer = score_popup_timer;
+    snap.score_popup_value = score_popup_value;
+    snap.score_popup_position = score_popup_position;
+    if (!path_vertex_cache_valid)
+        rebuild_path_vertex_cache(&level_path);
+}
+
+static void draw_path_from_cache(Renderer* r) {
+    switch_shader_mode(r, 1);
+    if (r->buffered_vertex_count + path_vertex_cache_count > RENDERER_MAX_VERTICES)
+        flush_vertex_buffer_to_gpu(r);
+    memcpy(&r->vertex_buffer[r->buffered_vertex_count], path_vertex_cache,
+        path_vertex_cache_count * sizeof(RenderVertex));
+    r->buffered_vertex_count += path_vertex_cache_count;
+}
+
+static void draw_gameplay_from_snapshot(void) {
+    draw_path_from_cache(&renderer);
+
+    for (int i = 0; i < snap.chain.ball_count; i++) {
+        const ChainBall* b = &snap.chain.balls[i];
+        if (!b->is_alive && !b->is_popping) continue;
+        float scale = b->is_popping
+            ? (1.0f + b->pop_animation_progress * 0.5f)
+            : b->insert_animation_progress;
+        float alpha = b->is_popping
+            ? (1.0f - b->pop_animation_progress)
+            : 1.0f;
+        draw_colored_ball(&renderer, b->position, b->color, scale, alpha);
+    }
+
+    for (int i = 0; i < snap.projectile_count; i++) {
+        const FiredProjectile* p = &snap.projectiles[i];
+        if (p->is_active)
+            draw_colored_ball(&renderer, p->position, p->color, 1.0f, 1.0f);
+    }
+
+    draw_cannon_with_next_ball(&renderer, &snap.cannon);
+    render_gameplay_hud(&snap);
+}
+
+#define LOGIC_HZ   240.0
 #define PIN_THREADS 1
 
 static CRITICAL_SECTION game_lock;
@@ -2081,7 +2151,9 @@ static DWORD WINAPI logic_thread_main(LPVOID unused) {
 
         EnterCriticalSection(&game_lock);
         while (acc >= step) {
-            if (current_game_state == GAME_STATE_PLAYING || current_game_state == GAME_STATE_BOT_PLAYING)update_game_logic((float)step);
+            if (current_game_state == GAME_STATE_PLAYING ||
+                current_game_state == GAME_STATE_BOT_PLAYING)
+                update_game_logic((float)step);
             acc -= step;
         }
         LeaveCriticalSection(&game_lock);
@@ -2140,78 +2212,57 @@ int main(int argc, char** argv) {
     glfwSetMouseButtonCallback(window, on_mouse_button_clicked);
     glfwSetCursorPosCallback(window, on_mouse_moved);
 
+    double previous_time = glfwGetTime();
+
     InitializeCriticalSection(&game_lock);
     timeBeginPeriod(1);
     HANDLE logic_thread = CreateThread(NULL, 0, logic_thread_main, NULL, 0, NULL);
-    #if PIN_THREADS
+#if PIN_THREADS
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     if (si.dwNumberOfProcessors >= 4) {
         SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)1 << 0);
         SetThreadAffinityMask(logic_thread, (DWORD_PTR)1 << 2);
     }
-    #endif
-
-    double previous_time = glfwGetTime();
+#endif
 
     while (!glfwWindowShouldClose(window)) {
         EnterCriticalSection(&game_lock);
         glfwPollEvents();
 
-        double current_time = glfwGetTime();
-        float  delta_time = (float)(current_time - previous_time);
-        if (delta_time > MAX_DELTA_TIME) delta_time = MAX_DELTA_TIME;
-        previous_time = current_time;
+        int pipelined = (current_game_state == GAME_STATE_PLAYING ||
+            current_game_state == GAME_STATE_BOT_PLAYING);
+        if (pipelined) {
+            take_render_snapshot();
+            LeaveCriticalSection(&game_lock);
+        }
 
         renderer_begin_frame(&renderer);
 
-        if (current_game_state == GAME_STATE_MAIN_MENU) {
-            render_main_menu_screen();
-
+        if (pipelined) {
+            draw_gameplay_from_snapshot();
         }
-        else if (current_game_state == GAME_STATE_PLAYING ||
-            current_game_state == GAME_STATE_BOT_PLAYING) {
-            draw_entire_path(&renderer, &level_path);
-
-            for (int i = 0; i < ball_chain.ball_count; i++) {
-                ChainBall* b = &ball_chain.balls[i];
-                if (!b->is_alive && !b->is_popping) continue;
-                float scale = b->is_popping
-                    ? (1.0f + b->pop_animation_progress * 0.5f)
-                    : b->insert_animation_progress;
-                float alpha = b->is_popping
-                    ? (1.0f - b->pop_animation_progress)
-                    : 1.0f;
-                draw_colored_ball(&renderer, b->position, b->color, scale, alpha);
-            }
-
-            for (int i = 0; i < active_projectile_count; i++) {
-                FiredProjectile* p = &projectiles[i];
-                if (p->is_active)
-                    draw_colored_ball(&renderer, p->position, p->color, 1.0f, 1.0f);
-            }
-
-            draw_cannon_with_next_ball(&renderer, &cannon);
-            render_gameplay_hud();
-
+        else if (current_game_state == GAME_STATE_MAIN_MENU) {
+            render_main_menu_screen();
         }
         else if (current_game_state == GAME_STATE_LEVEL_WIN) {
             render_level_win_screen();
-
         }
         else if (current_game_state == GAME_STATE_GAME_OVER) {
             render_game_over_screen();
         }
 
         renderer_end_frame(&renderer);
-        LeaveCriticalSection(&game_lock);
+        if (!pipelined) LeaveCriticalSection(&game_lock);
         glfwSwapBuffers(window);
     }
+
     InterlockedExchange(&logic_running, 0);
     WaitForSingleObject(logic_thread, INFINITE);
     CloseHandle(logic_thread);
     DeleteCriticalSection(&game_lock);
     timeEndPeriod(1);
+
     renderer_cleanup(&renderer);
     glfwDestroyWindow(window);
     glfwTerminate();
