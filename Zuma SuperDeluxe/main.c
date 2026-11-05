@@ -153,6 +153,10 @@ typedef struct {
     float        ortho_projection[16];
 } Renderer;
 
+static RenderVertex path_vertex_cache[(MAX_PATH_POINTS - 1) * 6];
+static int path_vertex_cache_count = 0;
+static int path_vertex_cache_valid = 0;
+
 
 static const LevelDefinition GAME_LEVELS[] = {
     {
@@ -1076,17 +1080,33 @@ static void draw_colored_ball(Renderer* r, Vector2D pos, BallColor color,
         BALL_RGB_COLORS[color][2], alpha);
 }
 
+#define CIRCLE_SEGMENTS 32
+static float circle_cos_table[CIRCLE_SEGMENTS + 1];
+static float circle_sin_table[CIRCLE_SEGMENTS + 1];
+static int   circle_tables_ready = 0;
+
+static void fill_circle_tables(void) {
+    if (circle_tables_ready) return;
+    for (int i = 0; i <= CIRCLE_SEGMENTS; i++) {
+        float a = 2 * PI * i / (float)CIRCLE_SEGMENTS;
+        circle_cos_table[i] = cosf(a);
+        circle_sin_table[i] = sinf(a);
+    }
+    circle_tables_ready = 1;
+}
+
 static void draw_filled_circle(Renderer* r, Vector2D pos, float radius,
     float cr, float cg, float cb, float ca) {
     switch_shader_mode(r, 1);
-    for (int i = 0; i < 32; i++) {
-        float a0 = 2 * PI * i / 32.0f, a1 = 2 * PI * (i + 1) / 32.0f;
+    for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
+        float c0 = circle_cos_table[i], s0 = circle_sin_table[i];
+        float c1 = circle_cos_table[i + 1], s1 = circle_sin_table[i + 1];
         if (r->buffered_vertex_count + 3 > RENDERER_MAX_VERTICES)
             flush_vertex_buffer_to_gpu(r);
         RenderVertex* v = &r->vertex_buffer[r->buffered_vertex_count];
-        v[0] = (RenderVertex){ pos.x,                 pos.y,                 cr,cg,cb,ca, 0,0 };
-        v[1] = (RenderVertex){ pos.x + cosf(a0) * radius, pos.y + sinf(a0) * radius, cr,cg,cb,ca, 0,0 };
-        v[2] = (RenderVertex){ pos.x + cosf(a1) * radius, pos.y + sinf(a1) * radius, cr,cg,cb,ca, 0,0 };
+        v[0] = (RenderVertex){ pos.x,               pos.y,               cr,cg,cb,ca, 0,0 };
+        v[1] = (RenderVertex){ pos.x + c0 * radius, pos.y + s0 * radius, cr,cg,cb,ca, 0,0 };
+        v[2] = (RenderVertex){ pos.x + c1 * radius, pos.y + s1 * radius, cr,cg,cb,ca, 0,0 };
         r->buffered_vertex_count += 3;
     }
 }
@@ -1095,37 +1115,42 @@ static void draw_circle_outline(Renderer* r, Vector2D pos, float radius,
     float cr, float cg, float cb, float ca,
     float thickness) {
     switch_shader_mode(r, 1);
+    fill_circle_tables();
     float inner = radius - thickness;
-    for (int i = 0; i < 32; i++) {
-        float a0 = 2 * PI * i / 32.0f, a1 = 2 * PI * (i + 1) / 32.0f;
+    for (int i = 0; i < CIRCLE_SEGMENTS; i++) {
+        float c0 = circle_cos_table[i], s0 = circle_sin_table[i];
+        float c1 = circle_cos_table[i + 1], s1 = circle_sin_table[i + 1];
         if (r->buffered_vertex_count + 6 > RENDERER_MAX_VERTICES)
             flush_vertex_buffer_to_gpu(r);
         RenderVertex* v = &r->vertex_buffer[r->buffered_vertex_count];
-        v[0] = (RenderVertex){ pos.x + cosf(a0) * inner,  pos.y + sinf(a0) * inner,  cr,cg,cb,ca, 0,0 };
-        v[1] = (RenderVertex){ pos.x + cosf(a0) * radius, pos.y + sinf(a0) * radius, cr,cg,cb,ca, 0,0 };
-        v[2] = (RenderVertex){ pos.x + cosf(a1) * radius, pos.y + sinf(a1) * radius, cr,cg,cb,ca, 0,0 };
-        v[3] = (RenderVertex){ pos.x + cosf(a0) * inner,  pos.y + sinf(a0) * inner,  cr,cg,cb,ca, 0,0 };
-        v[4] = (RenderVertex){ pos.x + cosf(a1) * radius, pos.y + sinf(a1) * radius, cr,cg,cb,ca, 0,0 };
-        v[5] = (RenderVertex){ pos.x + cosf(a1) * inner,  pos.y + sinf(a1) * inner,  cr,cg,cb,ca, 0,0 };
+        v[0] = (RenderVertex){ pos.x + c0 * inner,  pos.y + s0 * inner,  cr,cg,cb,ca, 0,0 };
+        v[1] = (RenderVertex){ pos.x + c0 * radius, pos.y + s0 * radius, cr,cg,cb,ca, 0,0 };
+        v[2] = (RenderVertex){ pos.x + c1 * radius, pos.y + s1 * radius, cr,cg,cb,ca, 0,0 };
+        v[3] = (RenderVertex){ pos.x + c0 * inner,  pos.y + s0 * inner,  cr,cg,cb,ca, 0,0 };
+        v[4] = (RenderVertex){ pos.x + c1 * radius, pos.y + s1 * radius, cr,cg,cb,ca, 0,0 };
+        v[5] = (RenderVertex){ pos.x + c1 * inner,  pos.y + s1 * inner,  cr,cg,cb,ca, 0,0 };
         r->buffered_vertex_count += 6;
     }
 }
 
-static void draw_thick_line(Renderer* r, Vector2D from, Vector2D to,
-    float cr, float cg, float cb, float ca,
-    float thickness) {
-    switch_shader_mode(r, 1);
+static void write_thick_line_vertex(RenderVertex* v, Vector2D from, Vector2D to,
+    float cr, float cg, float cb, float ca, float thickness) {
     Vector2D dir = vector2d_normalize(vector2d_subtract(to, from));
     Vector2D normal = { -dir.y * thickness * 0.5f, dir.x * thickness * 0.5f };
-    if (r->buffered_vertex_count + 6 > RENDERER_MAX_VERTICES)
-        flush_vertex_buffer_to_gpu(r);
-    RenderVertex* v = &r->vertex_buffer[r->buffered_vertex_count];
     v[0] = (RenderVertex){ from.x - normal.x, from.y - normal.y, cr,cg,cb,ca, 0,0 };
     v[1] = (RenderVertex){ from.x + normal.x, from.y + normal.y, cr,cg,cb,ca, 0,0 };
     v[2] = (RenderVertex){ to.x + normal.x, to.y + normal.y, cr,cg,cb,ca, 0,0 };
     v[3] = (RenderVertex){ from.x - normal.x, from.y - normal.y, cr,cg,cb,ca, 0,0 };
     v[4] = (RenderVertex){ to.x + normal.x, to.y + normal.y, cr,cg,cb,ca, 0,0 };
     v[5] = (RenderVertex){ to.x - normal.x, to.y - normal.y, cr,cg,cb,ca, 0,0 };
+}
+
+static void draw_thick_line(Renderer* r, Vector2D from, Vector2D to,
+    float cr, float cg, float cb, float ca, float thickness) {
+    switch_shader_mode(r, 1);
+    if (r->buffered_vertex_count + 6 > RENDERER_MAX_VERTICES)
+        flush_vertex_buffer_to_gpu(r);
+    write_thick_line_vertex(&r->vertex_buffer[r->buffered_vertex_count], from, to, cr, cg, cb, ca, thickness);
     r->buffered_vertex_count += 6;
 }
 
@@ -1146,10 +1171,30 @@ static void draw_dashed_trajectory(Renderer* r, Vector2D from, Vector2D to) {
     }
 }
 
+static void rebuild_path_vertex_cache(const BallPath* path) {
+    path_vertex_cache_count = 0;
+
+    for (int i = 0; i < path->total_points - 1; i++) {
+        write_thick_line_vertex(&path_vertex_cache[path_vertex_cache_count],
+            path->points[i], path->points[i + 1], 0.3f, 0.3f, 0.4f, 0.5f, 4.0f);
+        path_vertex_cache_count += 6;
+    }
+    path_vertex_cache_valid = 1;
+}
+
 static void draw_entire_path(Renderer* r, const BallPath* path) {
-    for (int i = 0; i < path->total_points - 1; i++)
-        draw_thick_line(r, path->points[i], path->points[i + 1],
-            0.3f, 0.3f, 0.4f, 0.5f, 4.0f);
+    if (!path_vertex_cache_valid)
+        rebuild_path_vertex_cache(path);
+
+    switch_shader_mode(r, 1);
+
+    if (r->buffered_vertex_count + path_vertex_cache_count > RENDERER_MAX_VERTICES)
+        flush_vertex_buffer_to_gpu(r);
+
+    memcpy(&r->vertex_buffer[r->buffered_vertex_count], path_vertex_cache,
+        path_vertex_cache_count * sizeof(RenderVertex));
+
+    r->buffered_vertex_count += path_vertex_cache_count;
 }
 
 static void draw_cannon_with_next_ball(Renderer* r, const Cannon* c) {
@@ -1233,11 +1278,20 @@ static void draw_single_character(Renderer* r, char ch, float x, float y,
     unsigned char idx = (unsigned char)ch;
     if (idx >= 128) return;
     for (int row = 0; row < 7; row++) {
-        for (int col = 0; col < 8; col++) {
-            if (BITMAP_FONT_5X7[idx][row] & (0x80 >> col))
-                draw_filled_rectangle(r,
-                    x + col * scale, y + row * scale,
-                    scale, scale, cr, cg, cb, ca);
+        unsigned char bits = BITMAP_FONT_5X7[idx][row];
+        if (!bits) continue;
+
+        int col = 0;
+        while (col < 8) {
+            if (!(bits & (0x80 >> col))) {
+                col++;
+                continue;
+            }
+            int start = col;
+            while (col < 8 && (bits & (0x80 >> col))) col++;
+
+            draw_filled_rectangle(r, x + start * scale, y + row * scale,
+                (col - start) * scale, scale, cr, cg, cb, ca);
         }
     }
 }
@@ -1283,6 +1337,7 @@ static void load_level_and_reset_game(int level_index) {
     bot.has_target = 0;
     hint.is_visible = 0;
     win_animation_timer = 0.0f;
+    path_vertex_cache_valid = 0;
 
     current_game_state = bot_mode_enabled ? GAME_STATE_BOT_PLAYING : GAME_STATE_PLAYING;
 }
@@ -1924,9 +1979,203 @@ static int run_benchmarks(void) {
 }
 
 
+static void old_draw_single_character(Renderer* r, char ch, float x, float y, float scale,
+    float cr, float cg, float cb, float ca) {
+    unsigned char idx = (unsigned char)ch;
+    if (idx >= 128) return;
+    for (int row = 0; row < 7; row++) {
+        for (int col = 0; col < 8; col++) {
+            if (BITMAP_FONT_5X7[idx][row] & (0x80 >> col))
+                draw_filled_rectangle(r, x + col * scale, y + row * scale,
+                    scale, scale, cr, cg, cb, ca);
+        }
+    }
+}
+
+static void old_draw_filled_circle(Renderer* r, Vector2D pos, float radius,
+    float cr, float cg, float cb, float ca) {
+    switch_shader_mode(r, 1);
+    for (int i = 0; i < 32; i++) {
+        float a0 = 2 * PI * i / 32.0f, a1 = 2 * PI * (i + 1) / 32.0f;
+        if (r->buffered_vertex_count + 3 > RENDERER_MAX_VERTICES)
+            flush_vertex_buffer_to_gpu(r);
+        RenderVertex* v = &r->vertex_buffer[r->buffered_vertex_count];
+        v[0] = (RenderVertex){ pos.x, pos.y, cr,cg,cb,ca, 0,0 };
+        v[1] = (RenderVertex){ pos.x + cosf(a0) * radius, pos.y + sinf(a0) * radius, cr,cg,cb,ca, 0,0 };
+        v[2] = (RenderVertex){ pos.x + cosf(a1) * radius, pos.y + sinf(a1) * radius, cr,cg,cb,ca, 0,0 };
+        r->buffered_vertex_count += 3;
+    }
+}
+
+static void old_draw_circle_outline(Renderer* r, Vector2D pos, float radius,
+    float cr, float cg, float cb, float ca, float thickness) {
+    switch_shader_mode(r, 1);
+    float inner = radius - thickness;
+    for (int i = 0; i < 32; i++) {
+        float a0 = 2 * PI * i / 32.0f, a1 = 2 * PI * (i + 1) / 32.0f;
+        if (r->buffered_vertex_count + 6 > RENDERER_MAX_VERTICES)
+            flush_vertex_buffer_to_gpu(r);
+        RenderVertex* v = &r->vertex_buffer[r->buffered_vertex_count];
+        v[0] = (RenderVertex){ pos.x + cosf(a0) * inner,  pos.y + sinf(a0) * inner,  cr,cg,cb,ca, 0,0 };
+        v[1] = (RenderVertex){ pos.x + cosf(a0) * radius, pos.y + sinf(a0) * radius, cr,cg,cb,ca, 0,0 };
+        v[2] = (RenderVertex){ pos.x + cosf(a1) * radius, pos.y + sinf(a1) * radius, cr,cg,cb,ca, 0,0 };
+        v[3] = (RenderVertex){ pos.x + cosf(a0) * inner,  pos.y + sinf(a0) * inner,  cr,cg,cb,ca, 0,0 };
+        v[4] = (RenderVertex){ pos.x + cosf(a1) * radius, pos.y + sinf(a1) * radius, cr,cg,cb,ca, 0,0 };
+        v[5] = (RenderVertex){ pos.x + cosf(a1) * inner,  pos.y + sinf(a1) * inner,  cr,cg,cb,ca, 0,0 };
+        r->buffered_vertex_count += 6;
+    }
+}
+
+static void old_draw_path_segments(Renderer* r, int n) {
+    for (int i = 0; i < n; i++)
+        draw_thick_line(r, level_path.points[i], level_path.points[i + 1],
+            0.3f, 0.3f, 0.4f, 0.5f, 4.0f);
+}
+
+static void new_draw_path_segments(Renderer* r, int n) {
+    if (!path_vertex_cache_valid) rebuild_path_vertex_cache(&level_path);
+    switch_shader_mode(r, 1);
+    memcpy(&r->vertex_buffer[r->buffered_vertex_count], path_vertex_cache,
+        (size_t)n * 6 * sizeof(RenderVertex));
+    r->buffered_vertex_count += n * 6;
+}
+
+static void compare_begin_frame(void) {
+    renderer.buffered_vertex_count = 0;
+    renderer.active_shader_mode = -1;
+}
+
+static void compare_make_text(char* out, int n) {
+    const char* pattern = "SCORE 12345 LIVES 3 BALLS 28 H-HINT B-BOT SPACE ";
+    int plen = (int)strlen(pattern);
+    for (int i = 0; i < n; i++) out[i] = pattern[i % plen];
+    out[n] = 0;
+}
+
+static void old_draw_text(Renderer* r, const char* text, float x, float y, float scale) {
+    float cx = x;
+    for (; *text; text++, cx += 9.0f * scale)
+        old_draw_single_character(r, *text, cx, y, scale, 1, 1, 1, 1);
+}
+
+static void compare_draw_circles(int n, int use_old) {
+    for (int i = 0; i < n; i++) {
+        Vector2D p = { 60.0f + (float)(i % 20) * 55.0f, 60.0f + (float)(i / 20) * 45.0f };
+        if (use_old) {
+            old_draw_filled_circle(&renderer, p, 28.0f, 0.2f, 0.2f, 0.3f, 1.0f);
+            old_draw_circle_outline(&renderer, p, 22.0f, 1, 1, 1, 0.4f, 3.0f);
+        }
+        else {
+            draw_filled_circle(&renderer, p, 28.0f, 0.2f, 0.2f, 0.3f, 1.0f);
+            draw_circle_outline(&renderer, p, 22.0f, 1, 1, 1, 0.4f, 3.0f);
+        }
+    }
+}
+
+static double compare_total_quad_area(const RenderVertex* v, int count) {
+    double area = 0.0;
+    for (int k = 0; k + 5 < count; k += 6) {
+        float x0 = v[k].x, x1 = v[k].x, y0 = v[k].y, y1 = v[k].y;
+        for (int j = 1; j < 6; j++) {
+            if (v[k + j].x < x0) x0 = v[k + j].x;
+            if (v[k + j].x > x1) x1 = v[k + j].x;
+            if (v[k + j].y < y0) y0 = v[k + j].y;
+            if (v[k + j].y > y1) y1 = v[k + j].y;
+        }
+        area += (double)(x1 - x0) * (double)(y1 - y0);
+    }
+    return area;
+}
+
+static void compare_print_row(const char* test, int n, double old_ms, double new_ms) {
+    printf("%s,%d,%.6f,%.6f,%.2fx\n", test, n, old_ms, new_ms, old_ms / new_ms);
+}
+
+static int run_compare_benchmarks(void) {
+    bench_mode = 1;
+    memset(&player, 0, sizeof(player));
+    memset(&bot, 0, sizeof(bot));
+    memset(&hint, 0, sizeof(hint));
+    load_level_and_reset_game(0);
+    printf("test,N,OLD_ms,NEW_ms,SPEEDUP\n");
+
+    {
+        int sizes[] = { 64, 128, 256, 512, 1023 };
+        for (int s = 0; s < 5; s++) {
+            int n = sizes[s]; double t_old, t_new;
+            BENCH_TIME_PER_CALL(t_old, { compare_begin_frame(); old_draw_path_segments(&renderer, n); renderer_end_frame(&renderer); });
+            BENCH_TIME_PER_CALL(t_new, { compare_begin_frame(); new_draw_path_segments(&renderer, n); renderer_end_frame(&renderer); });
+            compare_print_row("opt3_path_segments", n, t_old, t_new);
+        }
+    }
+
+    {
+        int sizes[] = { 10, 50, 100, 200, 400 };
+        static char text[512];
+        for (int s = 0; s < 5; s++) {
+            int n = sizes[s]; double t_old, t_new;
+            compare_make_text(text, n);
+            BENCH_TIME_PER_CALL(t_old, { compare_begin_frame(); old_draw_text(&renderer, text, 10, 10, 2.0f); renderer_end_frame(&renderer); });
+            BENCH_TIME_PER_CALL(t_new, { compare_begin_frame(); draw_text_string(&renderer, text, 10, 10, 2.0f, 1, 1, 1, 1); renderer_end_frame(&renderer); });
+            compare_print_row("opt4_text_chars", n, t_old, t_new);
+        }
+    }
+
+    {
+        int sizes[] = { 1, 10, 50, 100, 200 };
+        for (int s = 0; s < 5; s++) {
+            int n = sizes[s]; double t_old, t_new;
+            BENCH_TIME_PER_CALL(t_old, { compare_begin_frame(); compare_draw_circles(n, 1); renderer_end_frame(&renderer); });
+            BENCH_TIME_PER_CALL(t_new, { compare_begin_frame(); compare_draw_circles(n, 0); renderer_end_frame(&renderer); });
+            compare_print_row("opt5_circles", n, t_old, t_new);
+        }
+    }
+
+    {
+        static RenderVertex saved[RENDERER_MAX_VERTICES];
+        static char text[512];
+        int count_old, count_new;
+
+        compare_begin_frame(); old_draw_path_segments(&renderer, 1023);
+        count_old = renderer.buffered_vertex_count;
+        memcpy(saved, renderer.vertex_buffer, (size_t)count_old * sizeof(RenderVertex));
+        compare_begin_frame(); new_draw_path_segments(&renderer, 1023);
+        count_new = renderer.buffered_vertex_count;
+        int same_path = (count_old == count_new) &&
+            memcmp(saved, renderer.vertex_buffer, (size_t)count_old * sizeof(RenderVertex)) == 0;
+        printf("check_path_vertices_identical,%d,,,\n", same_path);
+
+        compare_begin_frame(); compare_draw_circles(50, 1);
+        count_old = renderer.buffered_vertex_count;
+        memcpy(saved, renderer.vertex_buffer, (size_t)count_old * sizeof(RenderVertex));
+        compare_begin_frame(); compare_draw_circles(50, 0);
+        count_new = renderer.buffered_vertex_count;
+        int same_circles = (count_old == count_new) &&
+            memcmp(saved, renderer.vertex_buffer, (size_t)count_old * sizeof(RenderVertex)) == 0;
+        printf("check_circles_vertices_identical,%d,,,\n", same_circles);
+
+        compare_make_text(text, 100);
+        compare_begin_frame(); old_draw_text(&renderer, text, 10, 10, 2.0f);
+        count_old = renderer.buffered_vertex_count;
+        double area_old = compare_total_quad_area(renderer.vertex_buffer, count_old);
+        compare_begin_frame(); draw_text_string(&renderer, text, 10, 10, 2.0f, 1, 1, 1, 1);
+        count_new = renderer.buffered_vertex_count;
+        double area_new = compare_total_quad_area(renderer.vertex_buffer, count_new);
+        int same_area = fabs(area_old - area_new) < 1e-6 * area_old;
+        printf("check_text_area_identical,%d,,,\n", same_area);
+        printf("text_vertices,100,%d,%d,%.2fx\n", count_old, count_new, (double)count_old / (double)count_new);
+    }
+    return 0;
+}
+
+
+
+
 int main(int argc, char** argv) {
     if (argc > 1 && strcmp(argv[1], "--bench") == 0)
         return run_benchmarks();
+    if (argc > 1 && strcmp(argv[1], "--bench-compare") == 0)
+        return run_compare_benchmarks();
 
     srand((unsigned int)time(NULL));
 
